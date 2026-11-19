@@ -8,4 +8,4 @@ COPY static ./static
 RUN mkdir -p /app/uploads /backups && chown -R appuser:appuser /app /backups
 USER appuser
 EXPOSE 8000
-CMD ["gunicorn", "--worker-class", "gthread", "--workers", "1", "--threads", "36", "--timeout", "1800", "--bind", "0.0.0.0:8000", "server:app"]
+CMD ["sh", "-c", "exec gunicorn --worker-class gthread --workers 1 --threads 36 --timeout 1800 --bind 0.0.0.0:${PORT:-8000} server:app"]

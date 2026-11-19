@@ -1,4 +1,4 @@
-"""Shree GatePass — Standalone Visitor Pass & Material Gate Management Server."""
+"""Shree GatePass — Multi-Tenant SaaS Visitor Pass & Material Gate Management Server."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import base64
 import hashlib
 import hmac
 import json
-import mimetypes
 import os
 import queue
 import re
@@ -16,13 +15,13 @@ import subprocess
 import sys
 import threading
 import time
-import urllib.parse
 import uuid
 import xml.sax.saxutils as xml_esc
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
+from urllib.parse import urlparse
 
 from flask import Flask, Response, jsonify, make_response, request, send_file, send_from_directory
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -44,40 +43,41 @@ SECRETS_DIR = APP_DIR / "secrets"
 
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 COOKIE_NAME = "gatepass_session"
+SUPER_COOKIE_NAME = "gatepass_super_session"
 COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").strip().lower() in ("1", "true", "yes")
 DEFAULT_SITE_NAME = os.getenv("SITE_NAME", "gatepass.local")
 SESSION_TTL_SECONDS = 7 * 24 * 3600
+DEFAULT_ORG_ID = "org-default"
 
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="/static")
 app.config["MAX_CONTENT_LENGTH"] = 64 * 1024 * 1024
 
 # ---------------------------------------------------------------------------
-# In-process live stream / revision state
+# In-process live stream / per-tenant revision state
 # ---------------------------------------------------------------------------
 _SSE_LOCK = threading.Lock()
-_SSE_SUBSCRIBERS: dict[str, tuple[queue.Queue, str, str, str]] = {}
+# subscriber_id -> (queue, org_id, username, dept, factory)
+_SSE_SUBSCRIBERS: dict[str, tuple[queue.Queue, str, str, str, str]] = {}
 _REVISIONS_LOCK = threading.Lock()
-_REVISIONS: dict[str, int] = {
-    "dataRev": 1,
-    "visitorRev": 1,
-    "gatepassRev": 1,
-    "notifRev": 1,
-}
-_USER_NOTIF_REV: dict[str, int] = defaultdict(int)
+_ORG_REVISIONS: dict[str, dict[str, int]] = defaultdict(
+    lambda: {"dataRev": 1, "visitorRev": 1, "gatepassRev": 1, "notifRev": 1}
+)
+_USER_NOTIF_REV: dict[tuple[str, str], int] = defaultdict(int)
 _LOGIN_ATTEMPTS: dict[str, list[float]] = defaultdict(list)
 _DB_READY = False
 _DB_INIT_LOCK = threading.Lock()
 
 
-def _bump_rev(*keys: str, usernames: list[str] | None = None) -> None:
+def _bump_rev(org_id: str, *keys: str, usernames: list[str] | None = None) -> None:
     with _REVISIONS_LOCK:
+        revs = _ORG_REVISIONS[org_id]
         for k in keys:
-            _REVISIONS[k] = int(_REVISIONS.get(k, 1)) + 1
+            revs[k] = int(revs.get(k, 1)) + 1
         if usernames:
             for u in usernames:
                 nu = str(u or "").strip().casefold()
                 if nu:
-                    _USER_NOTIF_REV[nu] = int(_USER_NOTIF_REV.get(nu, 0)) + 1
+                    _USER_NOTIF_REV[(org_id, nu)] = int(_USER_NOTIF_REV.get((org_id, nu), 0)) + 1
 
 
 # ---------------------------------------------------------------------------
@@ -120,11 +120,18 @@ def _b64u_decode(text: str) -> bytes:
     return base64.urlsafe_b64decode(text + pad)
 
 
-def sign_session_token(username: str, auth_version: int) -> str:
+def sign_session_token(
+    username: str,
+    auth_version: int,
+    org_id: str = DEFAULT_ORG_ID,
+    scope: str = "org",
+) -> str:
     payload = json.dumps(
         {
             "u": username,
             "v": int(auth_version),
+            "o": org_id,
+            "s": scope,
             "exp": int(time.time()) + SESSION_TTL_SECONDS,
         },
         separators=(",", ":"),
@@ -134,7 +141,7 @@ def sign_session_token(username: str, auth_version: int) -> str:
     return f"{b64}.{_b64u_encode(sig)}"
 
 
-def verify_session_token(token: str) -> dict | None:
+def verify_session_token(token: str, expected_scope: str | None = "org") -> dict | None:
     if not token or "." not in token:
         return None
     try:
@@ -144,6 +151,8 @@ def verify_session_token(token: str) -> dict | None:
             return None
         data = json.loads(_b64u_decode(b64).decode("utf-8"))
         if int(data.get("exp", 0)) < int(time.time()):
+            return None
+        if expected_scope and data.get("s", "org") != expected_scope:
             return None
         return data
     except Exception:
@@ -161,8 +170,37 @@ def _check_answer(answer: str, stored_hash: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Database Connection & Schema Bootstrap
+# Tenant / Slug Validation & Defaults
 # ---------------------------------------------------------------------------
+def normalize_slug(raw: str, fallback: str = "company") -> str:
+    cleaned = re.sub(r"[^a-z0-9-]+", "-", str(raw or "").strip().lower()).strip("-")
+    cleaned = re.sub(r"-{2,}", "-", cleaned)[:40]
+    if len(cleaned) < 2:
+        cleaned = re.sub(r"[^a-z0-9-]+", "-", fallback.lower()).strip("-") or "shree"
+    return cleaned
+
+
+def is_org_active(org: dict | None, now: datetime | None = None) -> tuple[bool, str]:
+    """Return (allowed, reason) for an organization record."""
+    if not org:
+        return False, "Organization not found"
+    if str(org.get("status") or "active").lower() != "active":
+        return False, "Organization access is suspended — contact your service provider"
+    exp = org.get("expires_at")
+    if isinstance(exp, str) and exp.strip():
+        try:
+            exp = datetime.fromisoformat(exp.replace("Z", "+00:00"))
+        except ValueError:
+            exp = None
+    if isinstance(exp, datetime):
+        ref = now or datetime.now(timezone.utc)
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        if exp < ref:
+            return False, "Organization subscription has expired — contact your service provider"
+    return True, ""
+
+
 DEFAULT_PERMS_BY_ROLE: dict[str, dict[str, str]] = {
     "Administrator": {
         "dashboard": "rw",
@@ -213,7 +251,7 @@ DEFAULT_PERMS_BY_ROLE: dict[str, dict[str, str]] = {
 DEFAULT_SETTINGS = {
     "company": "Shree GatePass",
     "site_name": DEFAULT_SITE_NAME,
-    "portal_title": "Security Gate & Visitor Self-Service",
+    "portal_title": "Security Gate · Visitor & Material Entry",
     "font_family": "Plus Jakarta Sans",
     "font_size": "14px",
     "auto_checkout_hours": 0,
@@ -257,46 +295,14 @@ def get_conn():
     return psycopg.connect(DATABASE_URL, autocommit=True, row_factory=dict_row, connect_timeout=8)
 
 
-def ensure_db_ready() -> None:
-    global _DB_READY
-    if _DB_READY or not DATABASE_URL or psycopg is None:
-        return
-    with _DB_INIT_LOCK:
-        if _DB_READY:
-            return
-        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-        (UPLOAD_DIR / "gate_media").mkdir(parents=True, exist_ok=True)
-        (UPLOAD_DIR / "ringtones").mkdir(parents=True, exist_ok=True)
-        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-        schema_sql = SCHEMA_FILE.read_text(encoding="utf-8")
-        with get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute(schema_sql)
-                defaults = {
-                    "manual_users": [],
-                    "factories": DEFAULT_FACTORIES,
-                    "factoryOrder": [f["code"] for f in DEFAULT_FACTORIES],
-                    "factoryDescs": {f["code"]: f["desc"] for f in DEFAULT_FACTORIES},
-                    "departments": DEFAULT_DEPARTMENTS,
-                    "settings": DEFAULT_SETTINGS,
-                    "sound_config": DEFAULT_SOUND_CONFIG,
-                }
-                for key, val in defaults.items():
-                    cur.execute(
-                        "INSERT INTO app_state (key, value) VALUES (%s, %s::jsonb) ON CONFLICT (key) DO NOTHING",
-                        (key, json.dumps(val)),
-                    )
-        _DB_READY = True
-
-
-def _get_state(conn, key: str, default=None):
+def _get_app_state(conn, key: str, default=None):
     with conn.cursor() as cur:
         cur.execute("SELECT value FROM app_state WHERE key=%s", (key,))
         row = cur.fetchone()
         return row["value"] if row else default
 
 
-def _set_state(conn, key: str, value) -> None:
+def _set_app_state(conn, key: str, value) -> None:
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -308,19 +314,195 @@ def _set_state(conn, key: str, value) -> None:
         )
 
 
-def _audit(conn, actor: str, action: str, detail: str, meta: dict | None = None) -> None:
+def _get_org_state(conn, org_id: str, key: str, default=None):
+    with conn.cursor() as cur:
+        cur.execute("SELECT value FROM org_state WHERE org_id=%s AND key=%s", (org_id, key))
+        row = cur.fetchone()
+        return row["value"] if row else default
+
+
+def _set_org_state(conn, org_id: str, key: str, value) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO org_state (org_id, key, value, updated_at)
+            VALUES (%s, %s, %s::jsonb, NOW())
+            ON CONFLICT (org_id, key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()
+            """,
+            (org_id, key, json.dumps(value)),
+        )
+
+
+def _seed_org_defaults(conn, org_id: str, company_name: str, portal_title: str = "Security Gate · Visitor & Material Entry") -> None:
+    defaults = {
+        "manual_users": [],
+        "factories": DEFAULT_FACTORIES,
+        "factoryOrder": [f["code"] for f in DEFAULT_FACTORIES],
+        "factoryDescs": {f["code"]: f["desc"] for f in DEFAULT_FACTORIES},
+        "departments": DEFAULT_DEPARTMENTS,
+        "settings": {**DEFAULT_SETTINGS, "company": company_name, "portal_title": portal_title},
+        "sound_config": DEFAULT_SOUND_CONFIG,
+    }
+    with conn.cursor() as cur:
+        for key, val in defaults.items():
+            cur.execute(
+                "INSERT INTO org_state (org_id, key, value) VALUES (%s, %s, %s::jsonb) ON CONFLICT (org_id, key) DO NOTHING",
+                (org_id, key, json.dumps(val)),
+            )
+
+
+def _migrate_single_tenant_if_needed(conn) -> None:
+    """Safely upgrade existing single-tenant installations into Multi-Tenant default org."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) AS cnt FROM organizations")
+        org_cnt = int((cur.fetchone() or {}).get("cnt", 0))
+        if org_cnt > 0:
+            return
+        legacy_users = _get_app_state(conn, "manual_users", []) or []
+        if not legacy_users:
+            return
+        legacy_settings = _get_app_state(conn, "settings", dict(DEFAULT_SETTINGS)) or dict(DEFAULT_SETTINGS)
+        comp_name = str(legacy_settings.get("company") or "Shree GatePass").strip() or "Shree GatePass"
+        slug = normalize_slug(comp_name, "shree")
+        cur.execute(
+            """
+            INSERT INTO organizations (id, slug, name, portal_title, status, max_users, plan_name)
+            VALUES (%s, %s, %s, %s, 'active', 250, 'Enterprise')
+            ON CONFLICT (id) DO NOTHING
+            """,
+            (DEFAULT_ORG_ID, slug, comp_name, legacy_settings.get("portal_title", DEFAULT_SETTINGS["portal_title"])),
+        )
+        for k in ("manual_users", "factories", "factoryOrder", "factoryDescs", "departments", "settings", "sound_config"):
+            val = _get_app_state(conn, k)
+            if val is not None:
+                _set_org_state(conn, DEFAULT_ORG_ID, k, val)
+        _seed_org_defaults(conn, DEFAULT_ORG_ID, comp_name)
+
+        # Promote existing enabled administrators to initial super_admins if none exist
+        supers = _get_app_state(conn, "super_admins", []) or []
+        if not supers:
+            admins = [
+                {
+                    "username": u["username"],
+                    "full_name": u.get("full_name") or u["username"],
+                    "password_hash": u["password_hash"],
+                    "recovery_hashes": u.get("recovery_hashes") or [],
+                    "auth_version": int(u.get("auth_version", 1) or 1),
+                    "enabled": True,
+                    "created_at": u.get("created_at") or datetime.now(timezone.utc).isoformat(),
+                }
+                for u in legacy_users
+                if u.get("role") == "Administrator" and u.get("enabled", True)
+            ]
+            if admins:
+                _set_app_state(conn, "super_admins", admins)
+
+        # Move legacy flat gate_media uploads into org-default/gate_media if present
+        old_media = UPLOAD_DIR / "gate_media"
+        new_media = UPLOAD_DIR / DEFAULT_ORG_ID / "gate_media"
+        if old_media.exists() and not new_media.exists():
+            new_media.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(old_media, new_media, dirs_exist_ok=True)
+
+
+def ensure_db_ready() -> None:
+    global _DB_READY
+    if _DB_READY or not DATABASE_URL or psycopg is None:
+        return
+    with _DB_INIT_LOCK:
+        if _DB_READY:
+            return
+        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        (UPLOAD_DIR / "org_logos").mkdir(parents=True, exist_ok=True)
+        (UPLOAD_DIR / "ringtones").mkdir(parents=True, exist_ok=True)
+        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        schema_sql = SCHEMA_FILE.read_text(encoding="utf-8")
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(schema_sql)
+            _migrate_single_tenant_if_needed(conn)
+        _DB_READY = True
+
+
+def _audit(conn, org_id: str, actor: str, action: str, detail: str, meta: dict | None = None) -> None:
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO audit_logs (actor, action, detail, meta) VALUES (%s, %s, %s, %s::jsonb)",
-                (actor or "system", action, detail, json.dumps(meta or {})),
+                "INSERT INTO audit_logs (org_id, actor, action, detail, meta) VALUES (%s, %s, %s, %s, %s::jsonb)",
+                (org_id or DEFAULT_ORG_ID, actor or "system", action, detail, json.dumps(meta or {})),
             )
     except Exception:
         pass
 
 
 # ---------------------------------------------------------------------------
-# User / Permissions Normalization
+# Organization Resolution & Serialization
+# ---------------------------------------------------------------------------
+def _serialize_org(row: dict) -> dict:
+    ok, reason = is_org_active(row)
+    return {
+        "id": row["id"],
+        "slug": row["slug"],
+        "name": row["name"],
+        "logoUrl": row.get("logo_url", ""),
+        "portalTitle": row.get("portal_title", DEFAULT_SETTINGS["portal_title"]),
+        "status": row.get("status", "active"),
+        "active": ok,
+        "inactiveReason": reason,
+        "maxUsers": int(row.get("max_users") or 100),
+        "planName": row.get("plan_name", "Standard"),
+        "expiresAt": _iso(row.get("expires_at")),
+        "contactName": row.get("contact_name", ""),
+        "contactPhone": row.get("contact_phone", ""),
+        "contactEmail": row.get("contact_email", ""),
+        "notes": row.get("notes", ""),
+        "createdAt": _iso(row.get("created_at")),
+        "updatedAt": _iso(row.get("updated_at")),
+    }
+
+
+def _find_org_by_slug_or_id(conn, identifier: str) -> dict | None:
+    key = str(identifier or "").strip().lower()
+    if not key:
+        return None
+    with conn.cursor() as cur:
+        cur.execute("SELECT * FROM organizations WHERE LOWER(slug)=%s OR id=%s LIMIT 1", (key, identifier.strip()))
+        return cur.fetchone()
+
+
+def _resolve_public_org(conn, explicit_slug: str = "") -> tuple[dict | None, tuple[str, int, bool] | None]:
+    """Resolve organization strictly from explicit slug/query/referer, or auto-pick ONLY if single active org."""
+    slug = str(explicit_slug or "").strip()
+    if not slug:
+        slug = str(request.args.get("org") or "").strip()
+    if not slug:
+        ref = str(request.headers.get("Referer") or "")
+        m = re.search(r"/c/([A-Za-z0-9-]+)(?:/portal)?", ref)
+        if m:
+            slug = m.group(1)
+
+    if slug:
+        org = _find_org_by_slug_or_id(conn, slug)
+        if not org:
+            return None, (f"Unknown organization code '{slug}'", 404, True)
+        ok, reason = is_org_active(org)
+        if not ok:
+            return None, (reason, 403, False)
+        return org, None
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT * FROM organizations ORDER BY created_at ASC")
+        all_orgs = cur.fetchall() or []
+    active_orgs = [o for o in all_orgs if is_org_active(o)[0]]
+    if len(active_orgs) == 1:
+        return active_orgs[0], None
+    if len(all_orgs) == 0:
+        return None, ("Platform is not configured yet. Complete initial /setup first.", 503, True)
+    return None, ("Please enter your Company Code (e.g. /c/company-code/portal)", 400, True)
+
+
+# ---------------------------------------------------------------------------
+# User / Permissions Normalization & Auth Decorators
 # ---------------------------------------------------------------------------
 def normalize_perms(role: str, raw_perms: dict | None) -> dict[str, str]:
     base = dict(DEFAULT_PERMS_BY_ROLE.get(role, DEFAULT_PERMS_BY_ROLE["Staff"]))
@@ -334,7 +516,7 @@ def normalize_perms(role: str, raw_perms: dict | None) -> dict[str, str]:
     return base
 
 
-def _public_user_dict(user: dict) -> dict:
+def _public_user_dict(user: dict, org_row: dict | None = None) -> dict:
     role = user.get("role") or "Staff"
     return {
         "username": user.get("username", ""),
@@ -348,20 +530,33 @@ def _public_user_dict(user: dict) -> dict:
         "gate_scope": user.get("gate_scope") or ("security" if role == "Security Gate" else "user"),
         "enabled": bool(user.get("enabled", True)),
         "perms": normalize_perms(role, user.get("perms")),
+        "org_id": org_row["id"] if org_row else str(user.get("org_id") or DEFAULT_ORG_ID),
+        "org_slug": org_row["slug"] if org_row else str(user.get("org_slug") or ""),
+        "org_name": org_row["name"] if org_row else str(user.get("org_name") or ""),
         "created_at": user.get("created_at") or "",
     }
 
 
-def _get_current_user(conn) -> dict | None:
-    token = request.cookies.get(COOKIE_NAME) or ""
+def _extract_bearer_or_cookie(cookie_name: str) -> str:
+    token = request.cookies.get(cookie_name) or ""
     if not token:
         auth = request.headers.get("Authorization", "")
         if auth.startswith("Bearer "):
             token = auth[7:].strip()
-    data = verify_session_token(token)
+    return token
+
+
+def _get_current_user(conn) -> tuple[dict | None, dict | None]:
+    data = verify_session_token(_extract_bearer_or_cookie(COOKIE_NAME), expected_scope="org")
     if not data:
-        return None
-    users = _get_state(conn, "manual_users", []) or []
+        return None, None
+    org_id = str(data.get("o") or "").strip()
+    if not org_id:
+        return None, None
+    org = _find_org_by_slug_or_id(conn, org_id)
+    if not org or not is_org_active(org)[0]:
+        return None, None
+    users = _get_org_state(conn, org_id, "manual_users", []) or []
     uname = str(data.get("u", "")).casefold()
     for u in users:
         if (
@@ -369,14 +564,41 @@ def _get_current_user(conn) -> dict | None:
             and u.get("enabled", True)
             and int(u.get("auth_version", 1) or 1) == int(data.get("v", -1))
         ):
-            return _public_user_dict(u)
+            return _public_user_dict(u, org), org
+    return None, None
+
+
+def _get_current_super_admin(conn) -> dict | None:
+    data = verify_session_token(_extract_bearer_or_cookie(SUPER_COOKIE_NAME), expected_scope="super")
+    if not data:
+        return None
+    supers = _get_app_state(conn, "super_admins", []) or []
+    uname = str(data.get("u", "")).casefold()
+    for s in supers:
+        if (
+            str(s.get("username", "")).casefold() == uname
+            and s.get("enabled", True)
+            and int(s.get("auth_version", 1) or 1) == int(data.get("v", -1))
+        ):
+            return {
+                "username": s["username"],
+                "full_name": s.get("full_name") or s["username"],
+                "role": "Super Admin",
+                "scope": "super",
+            }
     return None
 
 
 def _require_csrf_ok() -> bool:
     if request.method in ("GET", "HEAD", "OPTIONS"):
         return True
-    if request.path.startswith("/api/public/") or request.path in ("/api/login", "/api/setup", "/api/recovery/reset"):
+    if request.path.startswith("/api/public/") or request.path in (
+        "/api/login",
+        "/api/setup",
+        "/api/recovery/reset",
+        "/api/super/login",
+        "/api/super/recovery/reset",
+    ):
         return True
     return bool(request.headers.get("X-Requested-With"))
 
@@ -389,22 +611,37 @@ def auth_required(mod: str | None = None, level: str = "ro"):
                 return jsonify({"error": "Missing CSRF header"}), 403
             ensure_db_ready()
             with get_conn() as conn:
-                user = _get_current_user(conn)
-                if not user:
+                user, org = _get_current_user(conn)
+                if not user or not org:
                     return jsonify({"error": "Authentication required"}), 401
                 if mod and user["role"] != "Administrator":
                     perm = user["perms"].get(mod, "none")
                     if perm == "none" or (level == "rw" and perm != "rw"):
                         return jsonify({"error": f"Insufficient permissions for {mod}"}), 403
-                return fn(conn, user, *args, **kwargs)
+                return fn(conn, org, user, *args, **kwargs)
 
         return wrapper
 
     return deco
 
 
+def super_required(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        if not _require_csrf_ok():
+            return jsonify({"error": "Missing CSRF header"}), 403
+        ensure_db_ready()
+        with get_conn() as conn:
+            sa = _get_current_super_admin(conn)
+            if not sa:
+                return jsonify({"error": "Super Admin authentication required"}), 401
+            return fn(conn, sa, *args, **kwargs)
+
+    return wrapper
+
+
 # ---------------------------------------------------------------------------
-# STRICT TARGETED NOTIFICATION ROUTING (Pure Functions -> Easily Tested)
+# STRICT TENANT-SCOPED & USER/DEPT TARGETED NOTIFICATION ROUTING
 # ---------------------------------------------------------------------------
 def resolve_notification_targets(
     users: list[dict],
@@ -414,18 +651,7 @@ def resolve_notification_targets(
     include_security: bool = False,
     fallback_admin_if_no_security: bool = False,
 ) -> tuple[list[str], str, bool]:
-    """Compute exact recipient usernames + department broadcast flag.
-
-    Rule:
-    1) If target_username is specified (Visitor Host or Material Recipient):
-       ONLY notify that specific user (+ security ONLY when explicitly requested,
-       e.g., approval confirmation or overdue reminder). Never broadcast to others.
-    2) If target_username is empty & target_department is set:
-       Notify ALL enabled users in that department (+ security if requested).
-       No users in other departments receive it.
-    3) If both are empty: notify Security Gate (or Administrators as fallback).
-    Returns: (target_usernames_lowercase, clean_dept, dept_broadcast_flag)
-    """
+    """Compute exact recipient usernames + department broadcast flag within an org."""
     clean_user = str(target_username or "").strip().casefold()
     clean_dept = str(target_department or "").strip()
     clean_factory = str(factory or "").strip().casefold()
@@ -474,9 +700,14 @@ def resolve_notification_targets(
 
 
 def event_visible_to_user(ev: dict, user: dict | None) -> bool:
-    """Strictly determine whether a notification event belongs to `user`."""
+    """Strictly determine whether a notification event belongs to `user` inside the SAME org."""
     if not user:
         return False
+    ev_org = str(ev.get("org_id") or "").strip()
+    u_org = str(user.get("org_id") or "").strip()
+    if ev_org and u_org and ev_org != u_org:
+        return False
+
     uname = str(user.get("username") or "").strip().casefold()
     udept = str(user.get("dept") or user.get("department") or "").strip().casefold()
     ufac = str(user.get("factory") or "").strip().casefold()
@@ -503,8 +734,10 @@ def _push_sse_event(ev: dict) -> None:
     dead = []
     with _SSE_LOCK:
         items = list(_SSE_SUBSCRIBERS.items())
-    for sid, (q_obj, sub_user, sub_dept, sub_fac) in items:
-        pseudo_user = {"username": sub_user, "dept": sub_dept, "factory": sub_fac}
+    for sid, (q_obj, sub_org, sub_user, sub_dept, sub_fac) in items:
+        if sub_org != ev.get("org_id"):
+            continue
+        pseudo_user = {"org_id": sub_org, "username": sub_user, "dept": sub_dept, "factory": sub_fac}
         if event_visible_to_user(ev, pseudo_user):
             try:
                 q_obj.put_nowait(payload)
@@ -519,6 +752,7 @@ def _push_sse_event(ev: dict) -> None:
 def emit_notification(
     conn,
     *,
+    org_id: str,
     kind: str,
     level: str,
     title: str,
@@ -537,6 +771,7 @@ def emit_notification(
     targets = sorted({str(u).strip().casefold() for u in (target_usernames or []) if str(u).strip()})
     ev = {
         "id": ev_id,
+        "org_id": org_id,
         "ts": datetime.now(timezone.utc).isoformat(),
         "kind": kind,
         "level": level,
@@ -554,11 +789,12 @@ def emit_notification(
         cur.execute(
             """
             INSERT INTO notification_events
-                (id, ts, kind, level, title, body, factory, target_department, target_usernames, target_view, target_id, meta, read_by)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s::jsonb, '[]'::jsonb)
+                (id, org_id, ts, kind, level, title, body, factory, target_department, target_usernames, target_view, target_id, meta, read_by)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s::jsonb, '[]'::jsonb)
             """,
             (
                 ev["id"],
+                org_id,
                 ev["ts"],
                 kind,
                 level,
@@ -572,7 +808,7 @@ def emit_notification(
                 json.dumps(ev_meta),
             ),
         )
-    _bump_rev("notifRev", usernames=targets)
+    _bump_rev(org_id, "notifRev", usernames=targets)
     _push_sse_event(ev)
     return ev
 
@@ -595,6 +831,7 @@ def _serialize_visitor(row: dict) -> dict:
         selfies = [row["selfie_photo"], *selfies]
     return {
         "id": row["id"],
+        "orgId": row.get("org_id", DEFAULT_ORG_ID),
         "visitorName": row["visitor_name"],
         "company": row.get("company", ""),
         "phone": row.get("phone", ""),
@@ -635,14 +872,10 @@ def _serialize_gatepass(row: dict) -> dict:
     exp_ret = row.get("expected_return_at")
     ret_at = row.get("returned_at")
     is_ret = bool(row.get("is_returnable", False))
-    overdue = bool(
-        is_ret
-        and not ret_at
-        and isinstance(exp_ret, datetime)
-        and exp_ret <= datetime.now(timezone.utc)
-    )
+    overdue = bool(is_ret and not ret_at and isinstance(exp_ret, datetime) and exp_ret <= datetime.now(timezone.utc))
     return {
         "id": row["id"],
+        "orgId": row.get("org_id", DEFAULT_ORG_ID),
         "direction": row.get("direction", "IN"),
         "materialType": row.get("material_type", ""),
         "materialName": row.get("material_name", ""),
@@ -678,21 +911,20 @@ def _serialize_gatepass(row: dict) -> dict:
     }
 
 
-def _next_human_id(conn, prefix: str, table: str) -> str:
+def _next_human_id(conn, org_id: str, prefix: str, table: str) -> str:
     stamp = datetime.now(timezone.utc).strftime("%y%m%d")
     with conn.cursor() as cur:
-        cur.execute(f"SELECT COUNT(*) AS cnt FROM {table} WHERE id LIKE %s", (f"{prefix}-{stamp}-%",))
+        cur.execute(f"SELECT COUNT(*) AS cnt FROM {table} WHERE org_id=%s AND id LIKE %s", (org_id, f"{prefix}-{stamp}-%"))
         cnt = int((cur.fetchone() or {}).get("cnt", 0)) + 1
-    return f"{prefix}-{stamp}-{cnt:03d}-{secrets.token_hex(2).upper()}"
+    return f"{prefix}-{stamp}-{cnt:03d}-{secrets.token_hex(3).upper()}"
 
 
 # ---------------------------------------------------------------------------
-# Background Overdue Returnable Reminder Worker
+# Background Overdue Returnable Reminder Worker (Multi-Tenant Isolated)
 # ---------------------------------------------------------------------------
 def process_returnable_gatepass_reminders(conn) -> int:
-    """Emit overdue alerts for returnable items past due date (last_reminder_at >= 24h ago)."""
+    """Emit overdue alerts per active organization strictly within that org's users."""
     sent = 0
-    users = _get_state(conn, "manual_users", []) or []
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -703,11 +935,20 @@ def process_returnable_gatepass_reminders(conn) -> int:
               AND expected_return_at <= NOW()
               AND (last_reminder_at IS NULL OR last_reminder_at <= NOW() - INTERVAL '24 hours')
             ORDER BY expected_return_at ASC
-            LIMIT 25
+            LIMIT 40
             """
         )
-        rows = cur.fetchall()
+        rows = cur.fetchall() or []
+        org_cache: dict[str, tuple[dict | None, list[dict]]] = {}
         for row in rows:
+            oid = row.get("org_id") or DEFAULT_ORG_ID
+            if oid not in org_cache:
+                org_row = _find_org_by_slug_or_id(conn, oid)
+                users_list = _get_org_state(conn, oid, "manual_users", []) or []
+                org_cache[oid] = (org_row, users_list)
+            org_row, users = org_cache[oid]
+            if not is_org_active(org_row)[0]:
+                continue
             gp_id = row["id"]
             direction_label = "Outward Returnable (Expecting Return IN)" if row["direction"] == "OUT" else "Inward Returnable (Send Back OUT)"
             targets, tgt_dept, dept_bcast = resolve_notification_targets(
@@ -720,6 +961,7 @@ def process_returnable_gatepass_reminders(conn) -> int:
             )
             emit_notification(
                 conn,
+                org_id=oid,
                 kind="material_overdue",
                 level="warning",
                 title=f"Returnable Material Overdue: {row['material_name']} ({gp_id})",
@@ -732,10 +974,9 @@ def process_returnable_gatepass_reminders(conn) -> int:
                 target_id=gp_id,
                 meta={"direction": row["direction"], "gp_id": gp_id},
             )
-            cur.execute("UPDATE material_gate_passes SET last_reminder_at=NOW(), updated_at=NOW() WHERE id=%s", (gp_id,))
+            cur.execute("UPDATE material_gate_passes SET last_reminder_at=NOW(), updated_at=NOW() WHERE id=%s AND org_id=%s", (gp_id, oid))
+            _bump_rev(oid, "gatepassRev")
             sent += 1
-    if sent:
-        _bump_rev("gatepassRev")
     return sent
 
 
@@ -765,20 +1006,22 @@ def _start_worker_once() -> None:
     if _WORKER_STARTED or not DATABASE_URL or psycopg is None:
         return
     _WORKER_STARTED = True
-    t = threading.Thread(target=_reminder_loop, daemon=True, name="gatepass-reminder-worker")
-    t.start()
+    threading.Thread(target=_reminder_loop, daemon=True, name="gatepass-reminder-worker").start()
 
 
 # ---------------------------------------------------------------------------
-# Static Pages & Discovery / Setup / Auth Endpoints
+# Static Pages & Tenant-Aware Entry Routes
 # ---------------------------------------------------------------------------
 @app.get("/")
-def serve_index():
+@app.get("/superadmin")
+@app.get("/c/<org_slug>")
+@app.get("/c/<org_slug>/")
+def serve_index(org_slug: str = ""):
     ensure_db_ready()
     _start_worker_once()
     with get_conn() as conn:
-        users = _get_state(conn, "manual_users", []) or []
-        if not users:
+        supers = _get_app_state(conn, "super_admins", []) or []
+        if not supers:
             return send_file(APP_DIR / "setup.html")
     return send_file(APP_DIR / "index.html")
 
@@ -791,7 +1034,9 @@ def serve_setup():
 
 @app.get("/portal")
 @app.get("/kiosk")
-def serve_portal():
+@app.get("/c/<org_slug>/portal")
+@app.get("/c/<org_slug>/kiosk")
+def serve_portal(org_slug: str = ""):
     ensure_db_ready()
     _start_worker_once()
     return send_file(APP_DIR / "portal.html")
@@ -822,16 +1067,37 @@ def serve_favicon():
 @app.get("/api/health")
 def api_health():
     ensure_db_ready()
-    return jsonify({"status": "ok", "app": "Shree GatePass"})
+    return jsonify({"status": "ok", "app": "Shree GatePass Multi-Tenant SaaS"})
 
 
+# ---------------------------------------------------------------------------
+# Initial Setup & Authentication (Platform Super Admin + Org Users)
+# ---------------------------------------------------------------------------
 @app.get("/api/setup/status")
 def api_setup_status():
     ensure_db_ready()
+    org_hint = str(request.args.get("org") or "").strip()
     with get_conn() as conn:
-        users = _get_state(conn, "manual_users", []) or []
-        settings = _get_state(conn, "settings", DEFAULT_SETTINGS) or DEFAULT_SETTINGS
-    return jsonify({"configured": bool(users), "company": settings.get("company", "Shree GatePass")})
+        supers = _get_app_state(conn, "super_admins", []) or []
+        cur = conn.cursor()
+        cur.execute("SELECT id, slug, name, logo_url, portal_title, status, expires_at FROM organizations ORDER BY created_at ASC")
+        orgs = cur.fetchall() or []
+
+    matched_org = None
+    if org_hint:
+        matched_org = next((o for o in orgs if o["slug"].lower() == org_hint.lower() or o["id"] == org_hint), None)
+    elif len(orgs) == 1:
+        matched_org = orgs[0]
+
+    return jsonify(
+        {
+            "configured": bool(supers),
+            "multiTenant": True,
+            "orgCount": len(orgs),
+            "company": matched_org["name"] if matched_org else "Shree GatePass",
+            "org": _serialize_org(matched_org) if matched_org else None,
+        }
+    )
 
 
 @app.post("/api/setup")
@@ -839,6 +1105,7 @@ def api_setup():
     ensure_db_ready()
     data = request.get_json(silent=True) or {}
     company = str(data.get("company") or "Shree GatePass").strip() or "Shree GatePass"
+    org_slug = normalize_slug(data.get("org_slug") or company, "shree")
     site_name = str(data.get("site_name") or DEFAULT_SITE_NAME).strip() or DEFAULT_SITE_NAME
     full_name = str(data.get("full_name") or "").strip()
     username = str(data.get("username") or "").strip()
@@ -852,11 +1119,42 @@ def api_setup():
     if len(answers) != 3 or any(len(str(a or "").strip()) < 2 for a in answers):
         return jsonify({"error": "Please provide all 3 recovery answers"}), 400
 
+    pw_hash = generate_password_hash(password)
+    rec_hashes = [_hash_answer(a) for a in answers]
+    now_iso = datetime.now(timezone.utc).isoformat()
+
     with get_conn() as conn:
-        existing = _get_state(conn, "manual_users", []) or []
-        if existing:
-            return jsonify({"error": "Workspace is already configured"}), 409
-        admin_user = {
+        existing_supers = _get_app_state(conn, "super_admins", []) or []
+        if existing_supers:
+            return jsonify({"error": "Platform is already initialized"}), 409
+
+        super_admin = {
+            "username": username,
+            "full_name": full_name or username,
+            "password_hash": pw_hash,
+            "recovery_hashes": rec_hashes,
+            "auth_version": 1,
+            "enabled": True,
+            "created_at": now_iso,
+        }
+        _set_app_state(conn, "super_admins", [super_admin])
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO organizations (id, slug, name, portal_title, status, max_users, plan_name)
+                VALUES (%s, %s, %s, %s, 'active', 250, 'Enterprise')
+                ON CONFLICT (id) DO UPDATE SET slug=EXCLUDED.slug, name=EXCLUDED.name
+                """,
+                (DEFAULT_ORG_ID, org_slug, company, DEFAULT_SETTINGS["portal_title"]),
+            )
+        _seed_org_defaults(conn, DEFAULT_ORG_ID, company)
+        settings = _get_org_state(conn, DEFAULT_ORG_ID, "settings", dict(DEFAULT_SETTINGS)) or dict(DEFAULT_SETTINGS)
+        settings["company"] = company
+        settings["site_name"] = site_name
+        _set_org_state(conn, DEFAULT_ORG_ID, "settings", settings)
+
+        first_org_admin = {
             "username": username,
             "full_name": full_name or username,
             "role": "Administrator",
@@ -867,19 +1165,16 @@ def api_setup():
             "gate_scope": "all",
             "enabled": True,
             "perms": normalize_perms("Administrator", {}),
-            "password_hash": generate_password_hash(password),
-            "recovery_hashes": [_hash_answer(a) for a in answers],
+            "password_hash": pw_hash,
+            "recovery_hashes": rec_hashes,
             "auth_version": 1,
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": now_iso,
         }
-        _set_state(conn, "manual_users", [admin_user])
-        settings = _get_state(conn, "settings", dict(DEFAULT_SETTINGS)) or dict(DEFAULT_SETTINGS)
-        settings["company"] = company
-        settings["site_name"] = site_name
-        _set_state(conn, "settings", settings)
-        _audit(conn, username, "setup", "Completed initial Shree GatePass setup")
-    _bump_rev("dataRev")
-    return jsonify({"ok": True})
+        _set_org_state(conn, DEFAULT_ORG_ID, "manual_users", [first_org_admin])
+        _audit(conn, DEFAULT_ORG_ID, username, "setup", f"Initialized platform & primary organization '{org_slug}'")
+
+    _bump_rev(DEFAULT_ORG_ID, "dataRev")
+    return jsonify({"ok": True, "orgSlug": org_slug})
 
 
 @app.post("/api/login")
@@ -889,34 +1184,48 @@ def api_login():
     ip = request.remote_addr or "unknown"
     now = time.time()
     recent = [t for t in _LOGIN_ATTEMPTS[ip] if now - t < 60]
-    if len(recent) >= 20:
+    if len(recent) >= 25:
         return jsonify({"error": "Too many login attempts; wait 1 minute."}), 429
     recent.append(now)
     _LOGIN_ATTEMPTS[ip] = recent
 
     data = request.get_json(silent=True) or {}
+    org_slug = str(data.get("org_slug") or data.get("orgSlug") or "").strip()
     username = str(data.get("username") or "").strip()
     password = str(data.get("password") or "")
+
     with get_conn() as conn:
-        users = _get_state(conn, "manual_users", []) or []
+        org = None
+        if org_slug:
+            org = _find_org_by_slug_or_id(conn, org_slug)
+        else:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM organizations ORDER BY created_at ASC")
+                all_orgs = cur.fetchall() or []
+            if len(all_orgs) == 1:
+                org = all_orgs[0]
+            else:
+                return jsonify({"error": "Company Code (Organization ID) is required"}), 400
+
+        if not org:
+            return jsonify({"error": "Company Code not found"}), 401
+        ok, reason = is_org_active(org)
+        if not ok:
+            return jsonify({"error": reason}), 403
+
+        users = _get_org_state(conn, org["id"], "manual_users", []) or []
         account = next((u for u in users if str(u.get("username", "")).casefold() == username.casefold()), None)
         if not account or not account.get("enabled", True):
-            return jsonify({"error": "Invalid username or password"}), 401
+            return jsonify({"error": "Invalid company code, username, or password"}), 401
         if not check_password_hash(str(account.get("password_hash") or ""), password):
-            return jsonify({"error": "Invalid username or password"}), 401
-        token = sign_session_token(account["username"], int(account.get("auth_version", 1) or 1))
-        _audit(conn, account["username"], "login", "Signed in")
-        pub = _public_user_dict(account)
-    resp = make_response(jsonify({"user": pub, "token": token}))
-    resp.set_cookie(
-        COOKIE_NAME,
-        token,
-        max_age=SESSION_TTL_SECONDS,
-        httponly=True,
-        samesite="Lax",
-        secure=COOKIE_SECURE,
-        path="/",
-    )
+            return jsonify({"error": "Invalid company code, username, or password"}), 401
+
+        token = sign_session_token(account["username"], int(account.get("auth_version", 1) or 1), org_id=org["id"], scope="org")
+        _audit(conn, org["id"], account["username"], "login", "Signed in")
+        pub = _public_user_dict(account, org)
+
+    resp = make_response(jsonify({"user": pub, "org": _serialize_org(org), "token": token}))
+    resp.set_cookie(COOKIE_NAME, token, max_age=SESSION_TTL_SECONDS, httponly=True, samesite="Lax", secure=COOKIE_SECURE, path="/")
     return resp
 
 
@@ -931,19 +1240,26 @@ def api_logout():
 def api_recovery_reset():
     ensure_db_ready()
     data = request.get_json(silent=True) or {}
+    org_slug = str(data.get("org_slug") or "").strip()
     username = str(data.get("username") or "").strip()
     answers = data.get("answers") or []
     new_pw = str(data.get("new_password") or "")
     if len(new_pw) < 8:
         return jsonify({"error": "New password must be at least 8 characters"}), 400
+
     with get_conn() as conn:
-        users = _get_state(conn, "manual_users", []) or []
+        org = _find_org_by_slug_or_id(conn, org_slug) if org_slug else None
+        if not org:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM organizations ORDER BY created_at ASC LIMIT 2")
+                rows = cur.fetchall() or []
+                if len(rows) == 1:
+                    org = rows[0]
+        if not org:
+            return jsonify({"error": "Valid Company Code is required"}), 400
+        users = _get_org_state(conn, org["id"], "manual_users", []) or []
         account = next(
-            (
-                u
-                for u in users
-                if str(u.get("username", "")).casefold() == username.casefold() and u.get("role") == "Administrator"
-            ),
+            (u for u in users if str(u.get("username", "")).casefold() == username.casefold() and u.get("role") == "Administrator"),
             None,
         )
         hashes = account.get("recovery_hashes") if account else None
@@ -951,51 +1267,414 @@ def api_recovery_reset():
             return jsonify({"error": "Recovery verification failed"}), 403
         account["password_hash"] = generate_password_hash(new_pw)
         account["auth_version"] = int(account.get("auth_version", 1) or 1) + 1
-        _set_state(conn, "manual_users", users)
-        _audit(conn, account["username"], "recovery_reset", "Administrator password reset via recovery questions")
+        _set_org_state(conn, org["id"], "manual_users", users)
+        _audit(conn, org["id"], account["username"], "recovery_reset", "Organization Admin password reset")
     return jsonify({"ok": True})
 
 
 @app.get("/api/me")
 @auth_required()
-def api_me(conn, user):
-    return jsonify({"user": user})
+def api_me(conn, org, user):
+    return jsonify({"user": user, "org": _serialize_org(org)})
 
 
 @app.post("/api/account/password")
 @auth_required()
-def api_change_own_password(conn, user):
+def api_change_own_password(conn, org, user):
     data = request.get_json(silent=True) or {}
     cur_pw = str(data.get("current_password") or "")
     new_pw = str(data.get("new_password") or "")
     if len(new_pw) < 8:
         return jsonify({"error": "Password must be at least 8 characters"}), 400
-    users = _get_state(conn, "manual_users", []) or []
+    users = _get_org_state(conn, org["id"], "manual_users", []) or []
     account = next((u for u in users if str(u.get("username", "")).casefold() == user["username"].casefold()), None)
     if not account or not check_password_hash(str(account.get("password_hash") or ""), cur_pw):
         return jsonify({"error": "Current password is incorrect"}), 400
     account["password_hash"] = generate_password_hash(new_pw)
     account["auth_version"] = int(account.get("auth_version", 1) or 1) + 1
-    _set_state(conn, "manual_users", users)
-    token = sign_session_token(account["username"], account["auth_version"])
+    _set_org_state(conn, org["id"], "manual_users", users)
+    token = sign_session_token(account["username"], account["auth_version"], org_id=org["id"], scope="org")
     resp = make_response(jsonify({"ok": True}))
     resp.set_cookie(COOKIE_NAME, token, max_age=SESSION_TTL_SECONDS, httponly=True, samesite="Lax", secure=COOKIE_SECURE, path="/")
     return resp
 
 
 # ---------------------------------------------------------------------------
-# Bootstrap Workspace Data + Users / Departments / Factories / Settings
+# SUPER ADMIN SAAS MANAGEMENT APIs (/api/super/*)
+# ---------------------------------------------------------------------------
+@app.post("/api/super/login")
+def api_super_login():
+    ensure_db_ready()
+    _start_worker_once()
+    data = request.get_json(silent=True) or {}
+    username = str(data.get("username") or "").strip()
+    password = str(data.get("password") or "")
+    with get_conn() as conn:
+        supers = _get_app_state(conn, "super_admins", []) or []
+        sa = next((s for s in supers if str(s.get("username", "")).casefold() == username.casefold()), None)
+        if not sa or not sa.get("enabled", True) or not check_password_hash(str(sa.get("password_hash") or ""), password):
+            return jsonify({"error": "Invalid Super Admin credentials"}), 401
+        token = sign_session_token(sa["username"], int(sa.get("auth_version", 1) or 1), org_id="__super__", scope="super")
+    resp = make_response(jsonify({"superAdmin": {"username": sa["username"], "full_name": sa.get("full_name") or sa["username"]}}))
+    resp.set_cookie(SUPER_COOKIE_NAME, token, max_age=SESSION_TTL_SECONDS, httponly=True, samesite="Lax", secure=COOKIE_SECURE, path="/")
+    return resp
+
+
+@app.post("/api/super/logout")
+def api_super_logout():
+    resp = make_response(jsonify({"ok": True}))
+    resp.delete_cookie(SUPER_COOKIE_NAME, path="/")
+    return resp
+
+
+@app.post("/api/super/recovery/reset")
+def api_super_recovery_reset():
+    ensure_db_ready()
+    data = request.get_json(silent=True) or {}
+    username = str(data.get("username") or "").strip()
+    answers = data.get("answers") or []
+    new_pw = str(data.get("new_password") or "")
+    if len(new_pw) < 8:
+        return jsonify({"error": "New password must be at least 8 characters"}), 400
+    with get_conn() as conn:
+        supers = _get_app_state(conn, "super_admins", []) or []
+        sa = next((s for s in supers if str(s.get("username", "")).casefold() == username.casefold()), None)
+        hashes = sa.get("recovery_hashes") if sa else None
+        if not sa or not hashes or len(answers) != 3 or not all(_check_answer(a, h) for a, h in zip(answers, hashes)):
+            return jsonify({"error": "Recovery verification failed"}), 403
+        sa["password_hash"] = generate_password_hash(new_pw)
+        sa["auth_version"] = int(sa.get("auth_version", 1) or 1) + 1
+        _set_app_state(conn, "super_admins", supers)
+    return jsonify({"ok": True})
+
+
+@app.get("/api/super/me")
+@super_required
+def api_super_me(conn, sa):
+    return jsonify({"superAdmin": sa})
+
+
+@app.get("/api/super/orgs")
+@super_required
+def api_super_list_orgs(conn, sa):
+    with conn.cursor() as cur:
+        cur.execute("SELECT * FROM organizations ORDER BY created_at DESC")
+        orgs = cur.fetchall() or []
+        cur.execute("SELECT org_id, COUNT(*) AS cnt FROM visitor_passes GROUP BY org_id")
+        v_counts = {r["org_id"]: int(r["cnt"]) for r in (cur.fetchall() or [])}
+        cur.execute("SELECT org_id, COUNT(*) AS cnt FROM material_gate_passes GROUP BY org_id")
+        g_counts = {r["org_id"]: int(r["cnt"]) for r in (cur.fetchall() or [])}
+        cur.execute("SELECT org_id, value FROM org_state WHERE key='manual_users'")
+        u_map = {r["org_id"]: (r["value"] or []) for r in (cur.fetchall() or [])}
+
+    out = []
+    for o in orgs:
+        oid = o["id"]
+        users = u_map.get(oid, [])
+        admins = [u["username"] for u in users if u.get("role") == "Administrator"]
+        item = _serialize_org(o)
+        item["stats"] = {
+            "users": len(users),
+            "visitors": v_counts.get(oid, 0),
+            "gatePasses": g_counts.get(oid, 0),
+            "admins": admins,
+        }
+        out.append(item)
+    return jsonify({"organizations": out, "superAdmin": sa})
+
+
+@app.post("/api/super/orgs")
+@super_required
+def api_super_create_org(conn, sa):
+    data = request.get_json(silent=True) or {}
+    name = str(data.get("name") or "").strip()
+    if len(name) < 2:
+        return jsonify({"error": "Organization name is required"}), 400
+    slug = normalize_slug(data.get("slug") or name, "org")
+    admin_user = str(data.get("adminUsername") or data.get("admin_username") or "admin").strip()
+    admin_full = str(data.get("adminFullName") or data.get("admin_full_name") or f"{name} Admin").strip()
+    admin_pw = str(data.get("adminPassword") or data.get("admin_password") or "")
+    if not re.match(r"^[A-Za-z0-9._@-]{3,80}$", admin_user):
+        return jsonify({"error": "Admin username must be 3-80 chars (letters/digits/._@-)"}), 400
+    if len(admin_pw) < 6:
+        return jsonify({"error": "Initial Admin password must be at least 6 characters"}), 400
+
+    try:
+        max_users = max(1, int(data.get("maxUsers") or 100))
+    except (ValueError, TypeError):
+        max_users = 100
+    plan_name = str(data.get("planName") or "Standard").strip() or "Standard"
+    exp_raw = str(data.get("expiresAt") or "").strip()
+    expires_at = None
+    if exp_raw:
+        try:
+            expires_at = datetime.fromisoformat(exp_raw.replace("Z", "+00:00"))
+        except ValueError:
+            expires_at = None
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM organizations WHERE slug=%s", (slug,))
+        if cur.fetchone():
+            return jsonify({"error": f"Company code '{slug}' already exists"}), 409
+        oid = f"org-{secrets.token_hex(4)}"
+        cur.execute(
+            """
+            INSERT INTO organizations (
+                id, slug, name, portal_title, status, max_users, plan_name, expires_at,
+                contact_name, contact_phone, contact_email, notes
+            ) VALUES (%s, %s, %s, %s, 'active', %s, %s, %s, %s, %s, %s, %s)
+            RETURNING *
+            """,
+            (
+                oid,
+                slug,
+                name,
+                str(data.get("portalTitle") or DEFAULT_SETTINGS["portal_title"]).strip(),
+                max_users,
+                plan_name,
+                expires_at,
+                str(data.get("contactName") or "").strip(),
+                str(data.get("contactPhone") or "").strip(),
+                str(data.get("contactEmail") or "").strip(),
+                str(data.get("notes") or "").strip(),
+            ),
+        )
+        org_row = cur.fetchone()
+
+    _seed_org_defaults(conn, oid, name, org_row["portal_title"])
+    first_admin = {
+        "username": admin_user,
+        "full_name": admin_full,
+        "role": "Administrator",
+        "dept": "Administration",
+        "factory": "",
+        "phone": str(data.get("contactPhone") or "").strip(),
+        "email": str(data.get("contactEmail") or "").strip(),
+        "gate_scope": "all",
+        "enabled": True,
+        "perms": normalize_perms("Administrator", {}),
+        "password_hash": generate_password_hash(admin_pw),
+        "auth_version": 1,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _set_org_state(conn, oid, "manual_users", [first_admin])
+    _audit(conn, oid, sa["username"], "create_org", f"Created organization {name} ({slug})")
+    return jsonify({"organization": _serialize_org(org_row)}), 201
+
+
+@app.post("/api/super/orgs/<org_id>/update")
+@super_required
+def api_super_update_org(conn, sa, org_id):
+    data = request.get_json(silent=True) or {}
+    org = _find_org_by_slug_or_id(conn, org_id)
+    if not org:
+        return jsonify({"error": "Organization not found"}), 404
+
+    name = str(data.get("name") or org["name"]).strip() or org["name"]
+    slug = normalize_slug(data.get("slug") or org["slug"], org["slug"])
+    status = str(data.get("status") or org["status"]).lower()
+    if status not in ("active", "suspended"):
+        status = "active"
+    try:
+        max_users = max(1, int(data.get("maxUsers") if "maxUsers" in data else org["max_users"]))
+    except (ValueError, TypeError):
+        max_users = org["max_users"]
+    plan_name = str(data.get("planName") if "planName" in data else org["plan_name"]).strip()
+    expires_at = org.get("expires_at")
+    if "expiresAt" in data:
+        eraw = str(data.get("expiresAt") or "").strip()
+        if not eraw:
+            expires_at = None
+        else:
+            try:
+                expires_at = datetime.fromisoformat(eraw.replace("Z", "+00:00"))
+            except ValueError:
+                pass
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM organizations WHERE slug=%s AND id<>%s", (slug, org["id"]))
+        if cur.fetchone():
+            return jsonify({"error": f"Company code '{slug}' is already used by another organization"}), 409
+        cur.execute(
+            """
+            UPDATE organizations
+               SET slug=%s, name=%s, status=%s, max_users=%s, plan_name=%s, expires_at=%s,
+                   contact_name=%s, contact_phone=%s, contact_email=%s, notes=%s, updated_at=NOW()
+             WHERE id=%s
+            RETURNING *
+            """,
+            (
+                slug,
+                name,
+                status,
+                max_users,
+                plan_name,
+                expires_at,
+                str(data.get("contactName", org.get("contact_name", ""))).strip(),
+                str(data.get("contactPhone", org.get("contact_phone", ""))).strip(),
+                str(data.get("contactEmail", org.get("contact_email", ""))).strip(),
+                str(data.get("notes", org.get("notes", ""))).strip(),
+                org["id"],
+            ),
+        )
+        updated = cur.fetchone()
+    settings = _get_org_state(conn, org["id"], "settings", dict(DEFAULT_SETTINGS)) or dict(DEFAULT_SETTINGS)
+    settings["company"] = name
+    _set_org_state(conn, org["id"], "settings", settings)
+    _bump_rev(org["id"], "dataRev")
+    return jsonify({"organization": _serialize_org(updated)})
+
+
+@app.post("/api/super/orgs/<org_id>/reset-admin")
+@super_required
+def api_super_reset_org_admin(conn, sa, org_id):
+    org = _find_org_by_slug_or_id(conn, org_id)
+    if not org:
+        return jsonify({"error": "Organization not found"}), 404
+    data = request.get_json(silent=True) or {}
+    username = str(data.get("username") or "").strip()
+    new_pw = str(data.get("newPassword") or data.get("password") or "")
+    if len(new_pw) < 6:
+        return jsonify({"error": "New password must be at least 6 characters"}), 400
+    users = _get_org_state(conn, org["id"], "manual_users", []) or []
+    target = None
+    if username:
+        target = next((u for u in users if str(u.get("username", "")).casefold() == username.casefold()), None)
+    if not target:
+        target = next((u for u in users if u.get("role") == "Administrator"), None)
+    if not target:
+        uname = username or "admin"
+        target = {
+            "username": uname,
+            "full_name": f"{org['name']} Admin",
+            "role": "Administrator",
+            "dept": "Administration",
+            "factory": "",
+            "gate_scope": "all",
+            "enabled": True,
+            "perms": normalize_perms("Administrator", {}),
+            "auth_version": 1,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        users.append(target)
+    target["password_hash"] = generate_password_hash(new_pw)
+    target["auth_version"] = int(target.get("auth_version", 1) or 1) + 1
+    target["enabled"] = True
+    _set_org_state(conn, org["id"], "manual_users", users)
+    _audit(conn, org["id"], sa["username"], "super_reset_admin", f"Reset password for {target['username']}")
+    return jsonify({"ok": True, "username": target["username"]})
+
+
+def _save_org_logo_file(org_id: str, file_storage) -> str:
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    logos_dir = UPLOAD_DIR / "org_logos"
+    logos_dir.mkdir(parents=True, exist_ok=True)
+    ext = Path(str(file_storage.filename or "logo.png")).suffix.lower()
+    if ext not in (".png", ".jpg", ".jpeg", ".webp", ".svg"):
+        ext = ".png"
+    safe_org = re.sub(r"[^a-zA-Z0-9_-]", "", org_id) or "org"
+    for old in logos_dir.glob(f"{safe_org}-logo.*"):
+        old.unlink(missing_ok=True)
+    fname = f"{safe_org}-logo{ext}"
+    file_storage.save(logos_dir / fname)
+    return f"/api/public/org-logo/{safe_org}?v={int(time.time())}"
+
+
+@app.post("/api/super/orgs/<org_id>/logo")
+@super_required
+def api_super_upload_org_logo(conn, sa, org_id):
+    org = _find_org_by_slug_or_id(conn, org_id)
+    if not org:
+        return jsonify({"error": "Organization not found"}), 404
+    f = request.files.get("file") or next(iter(request.files.values()), None)
+    if not f:
+        return jsonify({"error": "No logo image attached"}), 400
+    url = _save_org_logo_file(org["id"], f)
+    with conn.cursor() as cur:
+        cur.execute("UPDATE organizations SET logo_url=%s, updated_at=NOW() WHERE id=%s", (url, org["id"]))
+    _bump_rev(org["id"], "dataRev")
+    return jsonify({"logoUrl": url})
+
+
+@app.delete("/api/super/orgs/<org_id>")
+@super_required
+def api_super_delete_org(conn, sa, org_id):
+    org = _find_org_by_slug_or_id(conn, org_id)
+    if not org:
+        return jsonify({"error": "Organization not found"}), 404
+    oid = org["id"]
+    with conn.cursor() as cur:
+        for table in ("visitor_passes", "material_gate_passes", "notification_events", "user_notification_prefs", "org_state", "audit_logs"):
+            cur.execute(f"DELETE FROM {table} WHERE org_id=%s", (oid,))
+        cur.execute("DELETE FROM organizations WHERE id=%s", (oid,))
+    org_media = (UPLOAD_DIR / Path(oid).name).resolve()
+    if org_media.exists() and org_media.parent == UPLOAD_DIR.resolve():
+        shutil.rmtree(org_media, ignore_errors=True)
+    return jsonify({"ok": True})
+
+
+@app.get("/api/super/backups")
+@super_required
+def api_super_list_backups(conn, sa):
+    return _list_backups_resp()
+
+
+@app.post("/api/super/backups")
+@super_required
+def api_super_run_backup(conn, sa):
+    return _run_backup_resp(conn, DEFAULT_ORG_ID, sa["username"])
+
+
+@app.get("/api/super/backups/<path:name>")
+@super_required
+def api_super_download_backup(conn, sa, name):
+    return _download_backup_resp(name)
+
+
+@app.post("/api/super/password")
+@super_required
+def api_super_change_pw(conn, sa):
+    data = request.get_json(silent=True) or {}
+    cur_pw = str(data.get("current_password") or "")
+    new_pw = str(data.get("new_password") or "")
+    if len(new_pw) < 8:
+        return jsonify({"error": "Password must be at least 8 characters"}), 400
+    supers = _get_app_state(conn, "super_admins", []) or []
+    rec = next((s for s in supers if str(s.get("username", "")).casefold() == sa["username"].casefold()), None)
+    if not rec or not check_password_hash(str(rec.get("password_hash") or ""), cur_pw):
+        return jsonify({"error": "Current password incorrect"}), 400
+    rec["password_hash"] = generate_password_hash(new_pw)
+    rec["auth_version"] = int(rec.get("auth_version", 1) or 1) + 1
+    _set_app_state(conn, "super_admins", supers)
+    token = sign_session_token(rec["username"], rec["auth_version"], org_id="__super__", scope="super")
+    resp = make_response(jsonify({"ok": True}))
+    resp.set_cookie(SUPER_COOKIE_NAME, token, max_age=SESSION_TTL_SECONDS, httponly=True, samesite="Lax", secure=COOKIE_SECURE, path="/")
+    return resp
+
+
+@app.get("/api/public/org-logo/<org_id>")
+def api_serve_org_logo(org_id):
+    safe_org = re.sub(r"[^a-zA-Z0-9_-]", "", org_id) or "org"
+    logos_dir = UPLOAD_DIR / "org_logos"
+    for p in logos_dir.glob(f"{safe_org}-logo.*"):
+        return send_file(p)
+    return send_file(STATIC_DIR / "icons" / "icon-192.png")
+
+
+# ---------------------------------------------------------------------------
+# Organization Workspace Data + Users (with max_users enforcement) + Org Settings
 # ---------------------------------------------------------------------------
 @app.get("/api/data")
 @auth_required()
-def api_data(conn, user):
-    factories = _get_state(conn, "factories", DEFAULT_FACTORIES) or DEFAULT_FACTORIES
-    factory_order = _get_state(conn, "factoryOrder", [f["code"] for f in factories]) or []
-    factory_descs = _get_state(conn, "factoryDescs", {}) or {}
-    departments = _get_state(conn, "departments", DEFAULT_DEPARTMENTS) or DEFAULT_DEPARTMENTS
-    settings = _get_state(conn, "settings", DEFAULT_SETTINGS) or DEFAULT_SETTINGS
-    sound_cfg = _get_state(conn, "sound_config", DEFAULT_SOUND_CONFIG) or DEFAULT_SOUND_CONFIG
-    raw_users = _get_state(conn, "manual_users", []) or []
+def api_data(conn, org, user):
+    oid = org["id"]
+    factories = _get_org_state(conn, oid, "factories", DEFAULT_FACTORIES) or DEFAULT_FACTORIES
+    factory_order = _get_org_state(conn, oid, "factoryOrder", [f["code"] for f in factories]) or []
+    factory_descs = _get_org_state(conn, oid, "factoryDescs", {}) or {}
+    departments = _get_org_state(conn, oid, "departments", DEFAULT_DEPARTMENTS) or DEFAULT_DEPARTMENTS
+    settings = _get_org_state(conn, oid, "settings", dict(DEFAULT_SETTINGS)) or dict(DEFAULT_SETTINGS)
+    sound_cfg = _get_org_state(conn, oid, "sound_config", dict(DEFAULT_SOUND_CONFIG)) or dict(DEFAULT_SOUND_CONFIG)
+    raw_users = _get_org_state(conn, oid, "manual_users", []) or []
     directory = [
         {
             "username": u.get("username"),
@@ -1009,14 +1688,15 @@ def api_data(conn, user):
         }
         for u in raw_users
     ]
-    users_out = [_public_user_dict(u) for u in raw_users] if user["role"] == "Administrator" or user["perms"].get("users") != "none" else directory
+    users_out = [_public_user_dict(u, org) for u in raw_users] if user["role"] == "Administrator" or user["perms"].get("users") != "none" else directory
     with conn.cursor() as cur:
-        cur.execute("SELECT prefs FROM user_notification_prefs WHERE username=%s", (user["username"],))
+        cur.execute("SELECT prefs FROM user_notification_prefs WHERE org_id=%s AND username=%s", (oid, user["username"]))
         row = cur.fetchone()
         user_prefs = row["prefs"] if row else {}
     return jsonify(
         {
             "user": user,
+            "org": _serialize_org(org),
             "factories": factories,
             "factoryOrder": factory_order,
             "factoryDescs": factory_descs,
@@ -1026,20 +1706,25 @@ def api_data(conn, user):
             "userNotifPrefs": user_prefs,
             "users": users_out,
             "directory": directory,
-            "revisions": dict(_REVISIONS),
+            "revisions": dict(_ORG_REVISIONS[oid]),
         }
     )
 
 
 @app.post("/api/users")
 @auth_required("users", "rw")
-def api_save_user(conn, user):
+def api_save_user(conn, org, user):
+    oid = org["id"]
     data = request.get_json(silent=True) or {}
     username = str(data.get("username") or "").strip()
     if not username or not re.match(r"^[A-Za-z0-9._@-]{3,80}$", username):
         return jsonify({"error": "Valid username required (3-80 chars, letters/digits/._@-)"}), 400
-    users = _get_state(conn, "manual_users", []) or []
+    users = _get_org_state(conn, oid, "manual_users", []) or []
     existing = next((u for u in users if str(u.get("username", "")).casefold() == username.casefold()), None)
+    max_users = int(org.get("max_users") or 100)
+    if not existing and len(users) >= max_users:
+        return jsonify({"error": f"User limit reached ({len(users)}/{max_users}). Contact your Platform Administrator to expand your plan."}), 403
+
     role = str(data.get("role") or (existing.get("role") if existing else "Staff") or "Staff")
     if role not in DEFAULT_PERMS_BY_ROLE:
         role = "Staff"
@@ -1068,31 +1753,32 @@ def api_save_user(conn, user):
         entry["auth_version"] = int(entry.get("auth_version", 1) or 1) + 1
     if not existing:
         users.append(entry)
-    _set_state(conn, "manual_users", users)
-    _audit(conn, user["username"], "save_user", f"Saved user {username} ({role})")
-    _bump_rev("dataRev")
-    return jsonify({"user": _public_user_dict(entry)})
+    _set_org_state(conn, oid, "manual_users", users)
+    _audit(conn, oid, user["username"], "save_user", f"Saved user {username} ({role})")
+    _bump_rev(oid, "dataRev")
+    return jsonify({"user": _public_user_dict(entry, org)})
 
 
 @app.delete("/api/users/<username>")
 @auth_required("users", "rw")
-def api_delete_user(conn, user, username):
+def api_delete_user(conn, org, user, username):
+    oid = org["id"]
     if username.casefold() == user["username"].casefold():
         return jsonify({"error": "You cannot delete your own active admin account"}), 400
-    users = _get_state(conn, "manual_users", []) or []
+    users = _get_org_state(conn, oid, "manual_users", []) or []
     filtered = [u for u in users if str(u.get("username", "")).casefold() != username.casefold()]
     if len(filtered) == len(users):
         return jsonify({"error": "User not found"}), 404
-    _set_state(conn, "manual_users", filtered)
-    _audit(conn, user["username"], "delete_user", f"Deleted user {username}")
-    _bump_rev("dataRev")
+    _set_org_state(conn, oid, "manual_users", filtered)
+    _audit(conn, oid, user["username"], "delete_user", f"Deleted user {username}")
+    _bump_rev(oid, "dataRev")
     return jsonify({"ok": True})
 
 
 @app.post("/api/users/bulk")
 @auth_required("users", "rw")
-def api_bulk_users(conn, user):
-    """Bulk import/upsert users from Excel/CSV rows parsed by the client."""
+def api_bulk_users(conn, org, user):
+    oid = org["id"]
     data = request.get_json(silent=True) or {}
     rows = data.get("users") or []
     mode = str(data.get("mode") or "upsert").lower()
@@ -1100,9 +1786,10 @@ def api_bulk_users(conn, user):
     if not isinstance(rows, list) or not rows:
         return jsonify({"error": "No user rows provided"}), 400
 
-    users = _get_state(conn, "manual_users", []) or []
+    users = _get_org_state(conn, oid, "manual_users", []) or []
+    max_users = int(org.get("max_users") or 100)
     by_uname = {str(u.get("username", "")).casefold(): u for u in users}
-    departments = list(_get_state(conn, "departments", DEFAULT_DEPARTMENTS) or DEFAULT_DEPARTMENTS)
+    departments = list(_get_org_state(conn, oid, "departments", DEFAULT_DEPARTMENTS) or DEFAULT_DEPARTMENTS)
     dept_set = {d.casefold() for d in departments}
 
     created = updated = skipped = 0
@@ -1121,6 +1808,10 @@ def api_bulk_users(conn, user):
         if existing and mode == "skip":
             skipped += 1
             continue
+        if not existing and len(users) >= max_users:
+            errors.append(f"Row {idx}: organization user limit ({max_users}) reached")
+            skipped += 1
+            continue
         role_raw = str(row.get("role") or row.get("Role") or "Staff").strip()
         role = role_raw if role_raw in DEFAULT_PERMS_BY_ROLE else "Staff"
         dept_val = str(row.get("dept") or row.get("department") or row.get("Department") or "").strip()
@@ -1129,10 +1820,7 @@ def api_bulk_users(conn, user):
             dept_set.add(dept_val.casefold())
         pw_val = str(row.get("password") or row.get("Password") or "").strip()
         enabled_raw = row.get("enabled", True)
-        if isinstance(enabled_raw, str):
-            enabled_val = enabled_raw.strip().lower() not in ("false", "0", "no", "disabled")
-        else:
-            enabled_val = bool(enabled_raw)
+        enabled_val = enabled_raw.strip().lower() not in ("false", "0", "no", "disabled") if isinstance(enabled_raw, str) else bool(enabled_raw)
 
         rec = existing or {
             "username": uname,
@@ -1159,43 +1847,43 @@ def api_bulk_users(conn, user):
         else:
             updated += 1
 
-    _set_state(conn, "manual_users", users)
-    _set_state(conn, "departments", departments)
-    _audit(conn, user["username"], "bulk_users", f"Created {created}, updated {updated}, skipped {skipped}")
-    _bump_rev("dataRev")
+    _set_org_state(conn, oid, "manual_users", users)
+    _set_org_state(conn, oid, "departments", departments)
+    _audit(conn, oid, user["username"], "bulk_users", f"Created {created}, updated {updated}, skipped {skipped}")
+    _bump_rev(oid, "dataRev")
     return jsonify({"created": created, "updated": updated, "skipped": skipped, "errors": errors[:20]})
 
 
 @app.post("/api/departments")
 @auth_required("departments", "rw")
-def api_save_departments(conn, user):
+def api_save_departments(conn, org, user):
+    oid = org["id"]
     data = request.get_json(silent=True) or {}
     raw = data.get("departments")
     if not isinstance(raw, list):
         return jsonify({"error": "departments list required"}), 400
-    clean = []
-    seen = set()
+    clean, seen = [], set()
     for d in raw:
         val = str(d or "").strip()
         if val and val.casefold() not in seen:
             seen.add(val.casefold())
             clean.append(val)
-    _set_state(conn, "departments", clean)
-    _audit(conn, user["username"], "save_departments", f"Updated {len(clean)} departments")
-    _bump_rev("dataRev")
+    _set_org_state(conn, oid, "departments", clean)
+    _audit(conn, oid, user["username"], "save_departments", f"Updated {len(clean)} departments")
+    _bump_rev(oid, "dataRev")
     return jsonify({"departments": clean})
 
 
 @app.post("/api/factories")
 @auth_required("factories", "rw")
-def api_save_factories(conn, user):
+def api_save_factories(conn, org, user):
+    oid = org["id"]
     data = request.get_json(silent=True) or {}
     factories = data.get("factories")
     order = data.get("factoryOrder")
     descs = data.get("factoryDescs")
     if isinstance(factories, list):
-        cleaned = []
-        seen = set()
+        cleaned, seen = [], set()
         for f in factories:
             if not isinstance(f, dict):
                 continue
@@ -1205,47 +1893,69 @@ def api_save_factories(conn, user):
             if code and code not in seen:
                 seen.add(code)
                 cleaned.append({"code": code, "name": name or code, "desc": desc})
-        _set_state(conn, "factories", cleaned)
+        _set_org_state(conn, oid, "factories", cleaned)
         if not isinstance(order, list):
             order = [f["code"] for f in cleaned]
-        descs_map = {f["code"]: f["desc"] for f in cleaned}
-        _set_state(conn, "factoryDescs", descs_map)
+        _set_org_state(conn, oid, "factoryDescs", {f["code"]: f["desc"] for f in cleaned})
     if isinstance(order, list):
-        _set_state(conn, "factoryOrder", [str(x).strip().upper() for x in order if str(x).strip()])
+        _set_org_state(conn, oid, "factoryOrder", [str(x).strip().upper() for x in order if str(x).strip()])
     if isinstance(descs, dict):
-        _set_state(conn, "factoryDescs", descs)
-    _audit(conn, user["username"], "save_factories", "Updated factory sites")
-    _bump_rev("dataRev")
+        _set_org_state(conn, oid, "factoryDescs", descs)
+    _audit(conn, oid, user["username"], "save_factories", "Updated factory sites")
+    _bump_rev(oid, "dataRev")
     return jsonify({"ok": True})
 
 
 @app.post("/api/settings")
 @auth_required("settings", "rw")
-def api_save_settings(conn, user):
+def api_save_settings(conn, org, user):
+    oid = org["id"]
     data = request.get_json(silent=True) or {}
-    cur = _get_state(conn, "settings", dict(DEFAULT_SETTINGS)) or dict(DEFAULT_SETTINGS)
+    cur_set = _get_org_state(conn, oid, "settings", dict(DEFAULT_SETTINGS)) or dict(DEFAULT_SETTINGS)
     for k in ("company", "site_name", "portal_title", "font_family", "font_size", "auto_checkout_hours", "default_returnable_days"):
         if k in data:
-            cur[k] = data[k]
-    _set_state(conn, "settings", cur)
-    _audit(conn, user["username"], "save_settings", "Updated application settings")
-    _bump_rev("dataRev")
-    return jsonify({"settings": cur})
+            cur_set[k] = data[k]
+    _set_org_state(conn, oid, "settings", cur_set)
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE organizations SET name=%s, portal_title=%s, updated_at=NOW() WHERE id=%s",
+            (str(cur_set.get("company") or org["name"]), str(cur_set.get("portal_title") or org["portal_title"]), oid),
+        )
+    _audit(conn, oid, user["username"], "save_settings", "Updated organization settings")
+    _bump_rev(oid, "dataRev")
+    return jsonify({"settings": cur_set})
+
+
+@app.post("/api/settings/logo")
+@auth_required("settings", "rw")
+def api_org_upload_logo(conn, org, user):
+    f = request.files.get("file") or next(iter(request.files.values()), None)
+    if not f:
+        return jsonify({"error": "No logo image attached"}), 400
+    url = _save_org_logo_file(org["id"], f)
+    with conn.cursor() as cur:
+        cur.execute("UPDATE organizations SET logo_url=%s, updated_at=NOW() WHERE id=%s", (url, org["id"]))
+    _bump_rev(org["id"], "dataRev")
+    return jsonify({"logoUrl": url})
 
 
 # ---------------------------------------------------------------------------
-# Public Gate Kiosk Options & Gate Media Upload / Serve
+# Public Kiosk Options & Tenant-Scoped Gate Media
 # ---------------------------------------------------------------------------
 @app.get("/api/public/portal-options")
 def api_public_portal_options():
     ensure_db_ready()
     _start_worker_once()
     with get_conn() as conn:
-        factories = _get_state(conn, "factories", DEFAULT_FACTORIES) or DEFAULT_FACTORIES
-        order = _get_state(conn, "factoryOrder", [f["code"] for f in factories]) or []
-        departments = _get_state(conn, "departments", DEFAULT_DEPARTMENTS) or DEFAULT_DEPARTMENTS
-        settings = _get_state(conn, "settings", DEFAULT_SETTINGS) or DEFAULT_SETTINGS
-        users = _get_state(conn, "manual_users", []) or []
+        org, err = _resolve_public_org(conn)
+        if err:
+            return jsonify({"error": err[0], "needOrg": err[2]}), err[1]
+        oid = org["id"]
+        factories = _get_org_state(conn, oid, "factories", DEFAULT_FACTORIES) or DEFAULT_FACTORIES
+        order = _get_org_state(conn, oid, "factoryOrder", [f["code"] for f in factories]) or []
+        departments = _get_org_state(conn, oid, "departments", DEFAULT_DEPARTMENTS) or DEFAULT_DEPARTMENTS
+        settings = _get_org_state(conn, oid, "settings", dict(DEFAULT_SETTINGS)) or dict(DEFAULT_SETTINGS)
+        users = _get_org_state(conn, oid, "manual_users", []) or []
     employees = [
         {
             "username": u.get("username", ""),
@@ -1259,8 +1969,11 @@ def api_public_portal_options():
     ]
     return jsonify(
         {
-            "company": settings.get("company", "Shree GatePass"),
-            "portalTitle": settings.get("portal_title", "Security Gate & Visitor Self-Service"),
+            "orgId": oid,
+            "orgSlug": org["slug"],
+            "company": settings.get("company") or org["name"],
+            "logoUrl": org.get("logo_url", ""),
+            "portalTitle": settings.get("portal_title") or org.get("portal_title", "Security Gate · Visitor & Material Entry"),
             "defaultReturnableDays": int(settings.get("default_returnable_days", 7) or 7),
             "factories": factories,
             "factoryOrder": order,
@@ -1270,37 +1983,57 @@ def api_public_portal_options():
     )
 
 
-def _save_uploaded_photo_file(file_storage, prefix: str = "gate") -> str:
-    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    media_dir = UPLOAD_DIR / "gate_media"
+def _save_uploaded_photo_file(org_id: str, file_storage, prefix: str = "gate") -> str:
+    safe_org = re.sub(r"[^a-zA-Z0-9_-]", "", org_id) or DEFAULT_ORG_ID
+    media_dir = UPLOAD_DIR / safe_org / "gate_media"
     media_dir.mkdir(parents=True, exist_ok=True)
     orig = str(file_storage.filename or "photo.jpg")
     ext = Path(orig).suffix.lower()
     if ext not in (".jpg", ".jpeg", ".png", ".webp", ".gif", ".pdf"):
         ext = ".jpg"
-    fname = f"{prefix}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{secrets.token_hex(4)}{ext}"
-    out_path = media_dir / fname
-    file_storage.save(out_path)
-    return f"/api/gate-media/{fname}"
+    fname = f"{prefix}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{secrets.token_hex(6)}{ext}"
+    file_storage.save(media_dir / fname)
+    return f"/api/gate-media/{safe_org}/{fname}"
 
 
 @app.post("/api/public/gate-media")
-@app.post("/api/gate-media")
-def api_upload_gate_media():
+def api_public_upload_gate_media():
     ensure_db_ready()
+    with get_conn() as conn:
+        org, err = _resolve_public_org(conn, request.form.get("orgSlug") or request.form.get("org") or "")
+        if err:
+            return jsonify({"error": err[0], "needOrg": err[2]}), err[1]
+        oid = org["id"]
     files = request.files.getlist("files") or request.files.getlist("file") or list(request.files.values())
     if not files:
         return jsonify({"error": "No image or document files attached"}), 400
     prefix = re.sub(r"[^a-zA-Z0-9_-]", "", str(request.form.get("kind") or "gate"))[:20] or "gate"
-    urls = [_save_uploaded_photo_file(f, prefix=prefix) for f in files[:20]]
+    urls = [_save_uploaded_photo_file(oid, f, prefix=prefix) for f in files[:20]]
     return jsonify({"url": urls[0], "urls": urls})
 
 
-@app.get("/api/gate-media/<path:filename>")
-@app.get("/api/public/gate-media/<path:filename>")
-def api_serve_gate_media(filename):
+@app.post("/api/gate-media")
+@auth_required()
+def api_auth_upload_gate_media(conn, org, user):
+    files = request.files.getlist("files") or request.files.getlist("file") or list(request.files.values())
+    if not files:
+        return jsonify({"error": "No image or document files attached"}), 400
+    prefix = re.sub(r"[^a-zA-Z0-9_-]", "", str(request.form.get("kind") or "gate"))[:20] or "gate"
+    urls = [_save_uploaded_photo_file(org["id"], f, prefix=prefix) for f in files[:20]]
+    return jsonify({"url": urls[0], "urls": urls})
+
+
+@app.get("/api/gate-media/<org_id>/<path:filename>")
+@app.get("/api/public/gate-media/<org_id>/<path:filename>")
+def api_serve_gate_media(org_id, filename):
+    safe_org = re.sub(r"[^a-zA-Z0-9_-]", "", org_id) or DEFAULT_ORG_ID
     safe = Path(filename).name
-    media_dir = UPLOAD_DIR / "gate_media"
+    ensure_db_ready()
+    with get_conn() as conn:
+        user, _ = _get_current_user(conn)
+        if user and user["org_id"] != safe_org:
+            return jsonify({"error": "Forbidden for this organization"}), 403
+    media_dir = UPLOAD_DIR / safe_org / "gate_media"
     target = (media_dir / safe).resolve()
     if not target.exists() or target.parent != media_dir.resolve():
         return jsonify({"error": "File not found"}), 404
@@ -1308,9 +2041,9 @@ def api_serve_gate_media(filename):
 
 
 # ---------------------------------------------------------------------------
-# Visitor Pass Lifecycle API (4-Step: Pending -> Approved/Rejected -> Checked In -> Checked Out)
+# Visitor Pass Lifecycle API (Tenant-Scoped 4-Step Workflow)
 # ---------------------------------------------------------------------------
-def _create_visitor_pass(conn, data: dict, actor_label: str):
+def _create_visitor_pass(conn, org_id: str, data: dict, actor_label: str):
     visitor_name = str(data.get("visitorName") or data.get("visitor_name") or "").strip()
     if not visitor_name:
         return None, ("Visitor name is required", 400)
@@ -1319,7 +2052,7 @@ def _create_visitor_pass(conn, data: dict, actor_label: str):
     host_username = str(data.get("hostUsername") or data.get("host_username") or "").strip()
     host_name = str(data.get("hostName") or data.get("host_name") or "").strip()
 
-    users = _get_state(conn, "manual_users", []) or []
+    users = _get_org_state(conn, org_id, "manual_users", []) or []
     if host_username and not host_name:
         matched = next((u for u in users if str(u.get("username", "")).casefold() == host_username.casefold()), None)
         if matched:
@@ -1335,18 +2068,18 @@ def _create_visitor_pass(conn, data: dict, actor_label: str):
     if selfie_photo and selfie_photo not in selfie_photos:
         selfie_photos.insert(0, selfie_photo)
 
-    vid = _next_human_id(conn, "VP", "visitor_passes")
+    vid = _next_human_id(conn, org_id, "VP", "visitor_passes")
     now = datetime.now(timezone.utc)
     with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO visitor_passes (
-                id, visitor_name, company, phone, address, purpose, vehicle_no,
+                id, org_id, visitor_name, company, phone, address, purpose, vehicle_no,
                 factory, department, host_username, host_name,
                 id_card_photo, id_card_photos, selfie_photo, selfie_photos,
                 status, entry_time, notes, created_by
             ) VALUES (
-                %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s,
                 %s, %s::jsonb, %s, %s::jsonb,
                 'Pending', %s, %s, %s
@@ -1355,6 +2088,7 @@ def _create_visitor_pass(conn, data: dict, actor_label: str):
             """,
             (
                 vid,
+                org_id,
                 visitor_name,
                 str(data.get("company") or "").strip(),
                 str(data.get("phone") or "").strip(),
@@ -1376,7 +2110,6 @@ def _create_visitor_pass(conn, data: dict, actor_label: str):
         )
         row = cur.fetchone()
 
-    # STRICT targeted notification: ONLY host_username if given, else ONLY department users!
     targets, tgt_dept, dept_bcast = resolve_notification_targets(
         users,
         target_username=host_username,
@@ -1388,6 +2121,7 @@ def _create_visitor_pass(conn, data: dict, actor_label: str):
     who_label = host_name or host_username or (f"{department} Dept" if department else "Reception")
     emit_notification(
         conn,
+        org_id=org_id,
         kind="visitor_entry",
         level="info",
         title=f"Visitor Waiting at Gate: {visitor_name} ({vid})",
@@ -1400,7 +2134,7 @@ def _create_visitor_pass(conn, data: dict, actor_label: str):
         target_id=vid,
         meta={"visitor_id": vid, "step": "Pending", "host_username": host_username},
     )
-    _bump_rev("visitorRev")
+    _bump_rev(org_id, "visitorRev")
     return _serialize_visitor(row), None
 
 
@@ -1409,16 +2143,17 @@ def api_public_list_visitors():
     ensure_db_ready()
     factory = str(request.args.get("factory") or "").strip()
     with get_conn() as conn:
+        org, err = _resolve_public_org(conn)
+        if err:
+            return jsonify({"error": err[0], "needOrg": err[2]}), err[1]
+        oid = org["id"]
         with conn.cursor() as cur:
             if factory:
-                cur.execute(
-                    "SELECT * FROM visitor_passes WHERE factory=%s ORDER BY entry_time DESC LIMIT 80",
-                    (factory,),
-                )
+                cur.execute("SELECT * FROM visitor_passes WHERE org_id=%s AND factory=%s ORDER BY entry_time DESC LIMIT 80", (oid, factory))
             else:
-                cur.execute("SELECT * FROM visitor_passes ORDER BY entry_time DESC LIMIT 80")
+                cur.execute("SELECT * FROM visitor_passes WHERE org_id=%s ORDER BY entry_time DESC LIMIT 80", (oid,))
             rows = cur.fetchall()
-    return jsonify({"visitors": [_serialize_visitor(r) for r in rows], "rev": _REVISIONS["visitorRev"]})
+    return jsonify({"visitors": [_serialize_visitor(r) for r in rows], "rev": _ORG_REVISIONS[oid]["visitorRev"]})
 
 
 @app.post("/api/public/visitors")
@@ -1426,38 +2161,41 @@ def api_public_create_visitor():
     ensure_db_ready()
     data = request.get_json(silent=True) or {}
     with get_conn() as conn:
-        created, err = _create_visitor_pass(conn, data, "Gate Kiosk")
+        org, err = _resolve_public_org(conn, str(data.get("orgSlug") or data.get("org_slug") or ""))
         if err:
-            return jsonify({"error": err[0]}), err[1]
+            return jsonify({"error": err[0], "needOrg": err[2]}), err[1]
+        created, create_err = _create_visitor_pass(conn, org["id"], data, "Gate Kiosk")
+        if create_err:
+            return jsonify({"error": create_err[0]}), create_err[1]
     return jsonify({"visitor": created}), 201
 
 
 @app.get("/api/visitors")
 @auth_required("visitors", "ro")
-def api_list_visitors(conn, user):
+def api_list_visitors(conn, org, user):
+    oid = org["id"]
     factory = str(request.args.get("factory") or "").strip()
     status = str(request.args.get("status") or "").strip()
     with conn.cursor() as cur:
-        cur.execute("SELECT * FROM visitor_passes ORDER BY entry_time DESC LIMIT 300")
+        cur.execute("SELECT * FROM visitor_passes WHERE org_id=%s ORDER BY entry_time DESC LIMIT 300", (oid,))
         rows = cur.fetchall()
     items = [_serialize_visitor(r) for r in rows]
-    # Admins & Security Gate see all (filtered by optional factory/status); regular staff see their dept or hosted or all if permissions allow
     if factory:
         items = [v for v in items if not v["factory"] or v["factory"].casefold() == factory.casefold()]
     if status:
         items = [v for v in items if v["status"].casefold() == status.casefold()]
-    return jsonify({"visitors": items, "rev": _REVISIONS["visitorRev"]})
+    return jsonify({"visitors": items, "rev": _ORG_REVISIONS[oid]["visitorRev"]})
 
 
 @app.post("/api/visitors")
 @auth_required("visitors", "rw")
-def api_create_visitor(conn, user):
+def api_create_visitor(conn, org, user):
+    oid = org["id"]
     data = request.get_json(silent=True) or {}
-    with conn:
-        created, err = _create_visitor_pass(conn, data, user.get("full_name") or user["username"])
-        if err:
-            return jsonify({"error": err[0]}), err[1]
-        _audit(conn, user["username"], "create_visitor", f"Created visitor pass {created['id']}")
+    created, err = _create_visitor_pass(conn, oid, data, user.get("full_name") or user["username"])
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    _audit(conn, oid, user["username"], "create_visitor", f"Created visitor pass {created['id']}")
     return jsonify({"visitor": created}), 201
 
 
@@ -1478,7 +2216,8 @@ def _user_can_act_on_visitor(user: dict, v_row: dict) -> bool:
 
 @app.post("/api/visitors/<vid>/decision")
 @auth_required()
-def api_visitor_decision(conn, user, vid):
+def api_visitor_decision(conn, org, user, vid):
+    oid = org["id"]
     data = request.get_json(silent=True) or {}
     decision = str(data.get("decision") or "").strip()
     reason = str(data.get("reason") or "").strip()
@@ -1486,12 +2225,12 @@ def api_visitor_decision(conn, user, vid):
         return jsonify({"error": "decision must be Approved or Rejected"}), 400
 
     with conn.cursor() as cur:
-        cur.execute("SELECT * FROM visitor_passes WHERE id=%s", (vid,))
+        cur.execute("SELECT * FROM visitor_passes WHERE id=%s AND org_id=%s", (vid, oid))
         v_row = cur.fetchone()
         if not v_row:
             return jsonify({"error": "Visitor pass not found"}), 404
         if not _user_can_act_on_visitor(user, v_row):
-            return jsonify({"error": "Only the host user, department member, or Security/Admin can approve this visitor"}), 403
+            return jsonify({"error": "Only host user, department member, or Security/Admin can approve this visitor"}), 403
         if v_row["status"] in ("Checked In", "Checked Out"):
             return jsonify({"error": f"Visitor already {v_row['status']}"}), 409
 
@@ -1500,15 +2239,14 @@ def api_visitor_decision(conn, user, vid):
             """
             UPDATE visitor_passes
                SET status=%s, approved_by=%s, approved_at=NOW(), rejected_reason=%s, updated_at=NOW()
-             WHERE id=%s
+             WHERE id=%s AND org_id=%s
             RETURNING *
             """,
-            (decision, actor_name, reason if decision == "Rejected" else "", vid),
+            (decision, actor_name, reason if decision == "Rejected" else "", vid, oid),
         )
         updated = cur.fetchone()
 
-    users = _get_state(conn, "manual_users", []) or []
-    # Notify Security Gate (+ host if someone else approved on host's behalf)
+    users = _get_org_state(conn, oid, "manual_users", []) or []
     targets, tgt_dept, dept_bcast = resolve_notification_targets(
         users,
         target_username=updated.get("host_username") if (updated.get("host_username") or "").casefold() != user["username"].casefold() else "",
@@ -1519,6 +2257,7 @@ def api_visitor_decision(conn, user, vid):
     )
     emit_notification(
         conn,
+        org_id=oid,
         kind="visitor_status",
         level="success" if decision == "Approved" else "warning",
         title=f"Visitor {decision}: {updated['visitor_name']} ({vid})",
@@ -1535,16 +2274,17 @@ def api_visitor_decision(conn, user, vid):
         target_id=vid,
         meta={"visitor_id": vid, "step": decision},
     )
-    _audit(conn, user["username"], "visitor_decision", f"{vid} -> {decision}")
-    _bump_rev("visitorRev")
+    _audit(conn, oid, user["username"], "visitor_decision", f"{vid} -> {decision}")
+    _bump_rev(oid, "visitorRev")
     return jsonify({"visitor": _serialize_visitor(updated)})
 
 
 @app.post("/api/visitors/<vid>/checkin")
 @auth_required()
-def api_visitor_checkin(conn, user, vid):
+def api_visitor_checkin(conn, org, user, vid):
+    oid = org["id"]
     with conn.cursor() as cur:
-        cur.execute("SELECT * FROM visitor_passes WHERE id=%s", (vid,))
+        cur.execute("SELECT * FROM visitor_passes WHERE id=%s AND org_id=%s", (vid, oid))
         v_row = cur.fetchone()
         if not v_row:
             return jsonify({"error": "Visitor pass not found"}), 404
@@ -1562,14 +2302,14 @@ def api_visitor_checkin(conn, user, vid):
             """
             UPDATE visitor_passes
                SET status='Checked In', checked_in_by=%s, checked_in_at=COALESCE(checked_in_at, NOW()), updated_at=NOW()
-             WHERE id=%s
+             WHERE id=%s AND org_id=%s
             RETURNING *
             """,
-            (actor_name, vid),
+            (actor_name, vid, oid),
         )
         updated = cur.fetchone()
 
-    users = _get_state(conn, "manual_users", []) or []
+    users = _get_org_state(conn, oid, "manual_users", []) or []
     targets, tgt_dept, dept_bcast = resolve_notification_targets(
         users,
         target_username=updated.get("host_username") or "",
@@ -1580,6 +2320,7 @@ def api_visitor_checkin(conn, user, vid):
     )
     emit_notification(
         conn,
+        org_id=oid,
         kind="visitor_status",
         level="info",
         title=f"Visitor Checked In: {updated['visitor_name']} ({vid})",
@@ -1592,16 +2333,17 @@ def api_visitor_checkin(conn, user, vid):
         target_id=vid,
         meta={"visitor_id": vid, "step": "Checked In"},
     )
-    _audit(conn, user["username"], "visitor_checkin", f"Checked in {vid}")
-    _bump_rev("visitorRev")
+    _audit(conn, oid, user["username"], "visitor_checkin", f"Checked in {vid}")
+    _bump_rev(oid, "visitorRev")
     return jsonify({"visitor": _serialize_visitor(updated)})
 
 
 @app.post("/api/visitors/<vid>/checkout")
 @auth_required()
-def api_visitor_checkout(conn, user, vid):
+def api_visitor_checkout(conn, org, user, vid):
+    oid = org["id"]
     with conn.cursor() as cur:
-        cur.execute("SELECT * FROM visitor_passes WHERE id=%s", (vid,))
+        cur.execute("SELECT * FROM visitor_passes WHERE id=%s AND org_id=%s", (vid, oid))
         v_row = cur.fetchone()
         if not v_row:
             return jsonify({"error": "Visitor pass not found"}), 404
@@ -1617,14 +2359,14 @@ def api_visitor_checkout(conn, user, vid):
             """
             UPDATE visitor_passes
                SET status='Checked Out', checked_out_by=%s, checked_out_at=NOW(), updated_at=NOW()
-             WHERE id=%s
+             WHERE id=%s AND org_id=%s
             RETURNING *
             """,
-            (actor_name, vid),
+            (actor_name, vid, oid),
         )
         updated = cur.fetchone()
 
-    users = _get_state(conn, "manual_users", []) or []
+    users = _get_org_state(conn, oid, "manual_users", []) or []
     targets, tgt_dept, dept_bcast = resolve_notification_targets(
         users,
         target_username=updated.get("host_username") or "",
@@ -1635,6 +2377,7 @@ def api_visitor_checkout(conn, user, vid):
     )
     emit_notification(
         conn,
+        org_id=oid,
         kind="visitor_status",
         level="success",
         title=f"Visitor Checked Out: {updated['visitor_name']} ({vid})",
@@ -1647,20 +2390,23 @@ def api_visitor_checkout(conn, user, vid):
         target_id=vid,
         meta={"visitor_id": vid, "step": "Checked Out"},
     )
-    _audit(conn, user["username"], "visitor_checkout", f"Checked out {vid}")
-    _bump_rev("visitorRev")
+    _audit(conn, oid, user["username"], "visitor_checkout", f"Checked out {vid}")
+    _bump_rev(oid, "visitorRev")
     return jsonify({"visitor": _serialize_visitor(updated)})
 
 
 @app.post("/api/public/visitors/<vid>/checkin-out")
 def api_public_visitor_kiosk_action(vid):
-    """Gate Kiosk Checkout helper once guest has Checked In (or Approved)."""
     ensure_db_ready()
     data = request.get_json(silent=True) or {}
     action = str(data.get("action") or "checkout").lower()
     with get_conn() as conn:
+        org, err = _resolve_public_org(conn, str(data.get("orgSlug") or data.get("org_slug") or ""))
+        if err:
+            return jsonify({"error": err[0], "needOrg": err[2]}), err[1]
+        oid = org["id"]
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM visitor_passes WHERE id=%s", (vid,))
+            cur.execute("SELECT * FROM visitor_passes WHERE id=%s AND org_id=%s", (vid, oid))
             v_row = cur.fetchone()
             if not v_row:
                 return jsonify({"error": "Visitor pass not found"}), 404
@@ -1668,52 +2414,63 @@ def api_public_visitor_kiosk_action(vid):
                 return jsonify({"error": "Host approval is required first before gate check-in / check-out"}), 400
             if action == "checkin" and v_row["status"] == "Approved":
                 cur.execute(
-                    "UPDATE visitor_passes SET status='Checked In', checked_in_by='Gate Kiosk', checked_in_at=NOW(), updated_at=NOW() WHERE id=%s RETURNING *",
-                    (vid,),
+                    "UPDATE visitor_passes SET status='Checked In', checked_in_by='Gate Kiosk', checked_in_at=NOW(), updated_at=NOW() WHERE id=%s AND org_id=%s RETURNING *",
+                    (vid, oid),
                 )
             else:
                 cur.execute(
-                    "UPDATE visitor_passes SET status='Checked Out', checked_out_by='Gate Kiosk', checked_out_at=NOW(), updated_at=NOW() WHERE id=%s RETURNING *",
-                    (vid,),
+                    "UPDATE visitor_passes SET status='Checked Out', checked_out_by='Gate Kiosk', checked_out_at=NOW(), updated_at=NOW() WHERE id=%s AND org_id=%s RETURNING *",
+                    (vid, oid),
                 )
             updated = cur.fetchone()
-    _bump_rev("visitorRev")
+    _bump_rev(oid, "visitorRev")
     return jsonify({"visitor": _serialize_visitor(updated)})
 
 
 @app.post("/api/visitors/<vid>/photos")
+@auth_required("visitors", "rw")
+def api_auth_append_visitor_photos(conn, org, user, vid):
+    return _append_visitor_photos(conn, org["id"], vid, request.get_json(silent=True) or {})
+
+
 @app.post("/api/public/visitors/<vid>/photos")
-def api_append_visitor_photos(vid):
+def api_public_append_visitor_photos(vid):
     ensure_db_ready()
     data = request.get_json(silent=True) or {}
+    with get_conn() as conn:
+        org, err = _resolve_public_org(conn, str(data.get("orgSlug") or data.get("org_slug") or ""))
+        if err:
+            return jsonify({"error": err[0], "needOrg": err[2]}), err[1]
+        return _append_visitor_photos(conn, org["id"], vid, data)
+
+
+def _append_visitor_photos(conn, oid: str, vid: str, data: dict):
     kind = str(data.get("kind") or "selfie").lower()
     urls = [str(x).strip() for x in (data.get("urls") or []) if str(x).strip()]
     if not urls:
         return jsonify({"error": "No photo URLs provided"}), 400
     col = "id_card_photos" if kind in ("id", "idcard", "id_card") else "selfie_photos"
     single_col = "id_card_photo" if col == "id_card_photos" else "selfie_photo"
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(f"SELECT {col}, {single_col} FROM visitor_passes WHERE id=%s", (vid,))
-            row = cur.fetchone()
-            if not row:
-                return jsonify({"error": "Visitor not found"}), 404
-            existing = list(row.get(col) or [])
-            merged = list(dict.fromkeys([*existing, *urls]))
-            primary = row.get(single_col) or merged[0]
-            cur.execute(
-                f"UPDATE visitor_passes SET {col}=%s::jsonb, {single_col}=%s, updated_at=NOW() WHERE id=%s RETURNING *",
-                (json.dumps(merged), primary, vid),
-            )
-            updated = cur.fetchone()
-    _bump_rev("visitorRev")
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT {col}, {single_col} FROM visitor_passes WHERE id=%s AND org_id=%s", (vid, oid))
+        row = cur.fetchone()
+        if not row:
+            return jsonify({"error": "Visitor not found"}), 404
+        merged = list(dict.fromkeys([*(row.get(col) or []), *urls]))
+        primary = row.get(single_col) or merged[0]
+        cur.execute(
+            f"UPDATE visitor_passes SET {col}=%s::jsonb, {single_col}=%s, updated_at=NOW() WHERE id=%s AND org_id=%s RETURNING *",
+            (json.dumps(merged), primary, vid, oid),
+        )
+        updated = cur.fetchone()
+    _bump_rev(oid, "visitorRev")
     return jsonify({"visitor": _serialize_visitor(updated)})
 
 
 # ---------------------------------------------------------------------------
-# Material Gate Pass API (IN / OUT + Returnable Overdue Tracker)
+# Material Gate Pass API (Tenant-Scoped IN / OUT + Returnable Tracker)
 # ---------------------------------------------------------------------------
-def _create_gate_pass(conn, data: dict, actor_label: str):
+def _create_gate_pass(conn, org_id: str, data: dict, actor_label: str):
     material_name = str(data.get("materialName") or data.get("material_name") or "").strip()
     if not material_name:
         return None, ("Material description / name is required", 400)
@@ -1726,7 +2483,7 @@ def _create_gate_pass(conn, data: dict, actor_label: str):
     for_username = str(data.get("forUsername") or data.get("for_username") or "").strip()
     for_name = str(data.get("forName") or data.get("for_name") or "").strip()
 
-    users = _get_state(conn, "manual_users", []) or []
+    users = _get_org_state(conn, org_id, "manual_users", []) or []
     if for_username and not for_name:
         matched = next((u for u in users if str(u.get("username", "")).casefold() == for_username.casefold()), None)
         if matched:
@@ -1762,21 +2519,21 @@ def _create_gate_pass(conn, data: dict, actor_label: str):
     if bill_photo and bill_photo not in bill_photos:
         bill_photos.insert(0, bill_photo)
 
-    gp_id = _next_human_id(conn, f"GP-{direction}", "material_gate_passes")
+    gp_id = _next_human_id(conn, org_id, f"GP-{direction}", "material_gate_passes")
     initial_status = "Pending Return" if is_returnable else "Recorded"
 
     with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO material_gate_passes (
-                id, direction, material_type, material_name, quantity, unit,
+                id, org_id, direction, material_type, material_name, quantity, unit,
                 vehicle_no, driver_name, driver_phone, party_name, challan_no,
                 factory, department, for_username, for_name,
                 is_returnable, expected_days, expected_return_at,
                 material_photo, material_photos, bill_photo, bill_photos,
                 status, entry_time, notes, created_by
             ) VALUES (
-                %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s,
                 %s, %s, %s, %s,
                 %s, %s, %s,
@@ -1787,6 +2544,7 @@ def _create_gate_pass(conn, data: dict, actor_label: str):
             """,
             (
                 gp_id,
+                org_id,
                 direction,
                 str(data.get("materialType") or "").strip(),
                 material_name,
@@ -1828,6 +2586,7 @@ def _create_gate_pass(conn, data: dict, actor_label: str):
     ret_txt = f" · Returnable in {expected_days}d" if is_returnable else ""
     emit_notification(
         conn,
+        org_id=org_id,
         kind="material_entry",
         level="info",
         title=f"{dir_txt}: {material_name} ({gp_id})",
@@ -1840,7 +2599,7 @@ def _create_gate_pass(conn, data: dict, actor_label: str):
         target_id=gp_id,
         meta={"gp_id": gp_id, "direction": direction, "is_returnable": is_returnable},
     )
-    _bump_rev("gatepassRev")
+    _bump_rev(org_id, "gatepassRev")
     return _serialize_gatepass(row), None
 
 
@@ -1848,10 +2607,14 @@ def _create_gate_pass(conn, data: dict, actor_label: str):
 def api_public_list_gate_passes():
     ensure_db_ready()
     with get_conn() as conn:
+        org, err = _resolve_public_org(conn)
+        if err:
+            return jsonify({"error": err[0], "needOrg": err[2]}), err[1]
+        oid = org["id"]
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM material_gate_passes ORDER BY entry_time DESC LIMIT 80")
+            cur.execute("SELECT * FROM material_gate_passes WHERE org_id=%s ORDER BY entry_time DESC LIMIT 80", (oid,))
             rows = cur.fetchall()
-    return jsonify({"gatePasses": [_serialize_gatepass(r) for r in rows], "rev": _REVISIONS["gatepassRev"]})
+    return jsonify({"gatePasses": [_serialize_gatepass(r) for r in rows], "rev": _ORG_REVISIONS[oid]["gatepassRev"]})
 
 
 @app.post("/api/public/gate-passes")
@@ -1859,146 +2622,183 @@ def api_public_create_gate_pass():
     ensure_db_ready()
     data = request.get_json(silent=True) or {}
     with get_conn() as conn:
-        created, err = _create_gate_pass(conn, data, "Gate Kiosk")
+        org, err = _resolve_public_org(conn, str(data.get("orgSlug") or data.get("org_slug") or ""))
         if err:
-            return jsonify({"error": err[0]}), err[1]
+            return jsonify({"error": err[0], "needOrg": err[2]}), err[1]
+        created, create_err = _create_gate_pass(conn, org["id"], data, "Gate Kiosk")
+        if create_err:
+            return jsonify({"error": create_err[0]}), create_err[1]
     return jsonify({"gatePass": created}), 201
 
 
 @app.get("/api/gate-passes")
 @auth_required("gatepasses", "ro")
-def api_list_gate_passes(conn, user):
+def api_list_gate_passes(conn, org, user):
+    oid = org["id"]
     factory = str(request.args.get("factory") or "").strip()
     direction = str(request.args.get("direction") or "").strip().upper()
     with conn.cursor() as cur:
-        cur.execute("SELECT * FROM material_gate_passes ORDER BY entry_time DESC LIMIT 300")
+        cur.execute("SELECT * FROM material_gate_passes WHERE org_id=%s ORDER BY entry_time DESC LIMIT 300", (oid,))
         rows = cur.fetchall()
     items = [_serialize_gatepass(r) for r in rows]
     if factory:
         items = [g for g in items if not g["factory"] or g["factory"].casefold() == factory.casefold()]
     if direction in ("IN", "OUT"):
         items = [g for g in items if g["direction"] == direction]
-    return jsonify({"gatePasses": items, "rev": _REVISIONS["gatepassRev"]})
+    return jsonify({"gatePasses": items, "rev": _ORG_REVISIONS[oid]["gatepassRev"]})
 
 
 @app.post("/api/gate-passes")
 @auth_required("gatepasses", "rw")
-def api_create_gate_pass(conn, user):
+def api_create_gate_pass(conn, org, user):
+    oid = org["id"]
     data = request.get_json(silent=True) or {}
-    with conn:
-        created, err = _create_gate_pass(conn, data, user.get("full_name") or user["username"])
-        if err:
-            return jsonify({"error": err[0]}), err[1]
-        _audit(conn, user["username"], "create_gatepass", f"Created material gate pass {created['id']}")
+    created, err = _create_gate_pass(conn, oid, data, user.get("full_name") or user["username"])
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    _audit(conn, oid, user["username"], "create_gatepass", f"Created material gate pass {created['id']}")
     return jsonify({"gatePass": created}), 201
 
 
+def _complete_gatepass_return(conn, oid: str, gid: str, actor: str, note: str):
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE material_gate_passes
+               SET status='Returned', returned_at=NOW(), return_note=%s, verified_by=%s, verified_at=NOW(), updated_at=NOW()
+             WHERE id=%s AND org_id=%s
+            RETURNING *
+            """,
+            (note, actor, gid, oid),
+        )
+        row = cur.fetchone()
+    if not row:
+        return None
+    users = _get_org_state(conn, oid, "manual_users", []) or []
+    targets, tgt_dept, dept_bcast = resolve_notification_targets(
+        users,
+        target_username=row.get("for_username") or "",
+        target_department=row.get("department") or "",
+        factory=row.get("factory", ""),
+        include_security=True,
+        fallback_admin_if_no_security=False,
+    )
+    emit_notification(
+        conn,
+        org_id=oid,
+        kind="material_entry",
+        level="success",
+        title=f"Returnable Material Closed: {row['material_name']} ({gid})",
+        body=f"Marked Returned by {actor}" + (f" · Note: {note}" if note else ""),
+        factory=row.get("factory", ""),
+        target_department=tgt_dept,
+        target_usernames=targets,
+        dept_broadcast=dept_bcast,
+        target_view="gatepasses",
+        target_id=gid,
+        meta={"gp_id": gid, "returned": True},
+    )
+    _audit(conn, oid, actor, "return_gatepass", f"Returned {gid}")
+    _bump_rev(oid, "gatepassRev")
+    return _serialize_gatepass(row)
+
+
 @app.post("/api/gate-passes/<gid>/return")
+@auth_required("gatepasses", "rw")
+def api_auth_return_gate_pass(conn, org, user, gid):
+    data = request.get_json(silent=True) or {}
+    note = str(data.get("note") or data.get("returnNote") or "").strip()
+    actor = user.get("full_name") or user["username"]
+    gp = _complete_gatepass_return(conn, org["id"], gid, actor, note)
+    if not gp:
+        return jsonify({"error": "Material gate pass not found"}), 404
+    return jsonify({"gatePass": gp})
+
+
 @app.post("/api/public/gate-passes/<gid>/return")
-def api_return_gate_pass(gid):
+def api_public_return_gate_pass(gid):
     ensure_db_ready()
     data = request.get_json(silent=True) or {}
     note = str(data.get("note") or data.get("returnNote") or "").strip()
     with get_conn() as conn:
-        user = _get_current_user(conn)
-        actor = (user.get("full_name") or user["username"]) if user else "Gate Kiosk"
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE material_gate_passes
-                   SET status='Returned', returned_at=NOW(), return_note=%s, verified_by=%s, verified_at=NOW(), updated_at=NOW()
-                 WHERE id=%s
-                RETURNING *
-                """,
-                (note, actor, gid),
-            )
-            row = cur.fetchone()
-            if not row:
-                return jsonify({"error": "Material gate pass not found"}), 404
-        users = _get_state(conn, "manual_users", []) or []
-        targets, tgt_dept, dept_bcast = resolve_notification_targets(
-            users,
-            target_username=row.get("for_username") or "",
-            target_department=row.get("department") or "",
-            factory=row.get("factory", ""),
-            include_security=True,
-            fallback_admin_if_no_security=False,
-        )
-        emit_notification(
-            conn,
-            kind="material_entry",
-            level="success",
-            title=f"Returnable Material Closed: {row['material_name']} ({gid})",
-            body=f"Marked Returned by {actor}" + (f" · Note: {note}" if note else ""),
-            factory=row.get("factory", ""),
-            target_department=tgt_dept,
-            target_usernames=targets,
-            dept_broadcast=dept_bcast,
-            target_view="gatepasses",
-            target_id=gid,
-            meta={"gp_id": gid, "returned": True},
-        )
-        _audit(conn, actor, "return_gatepass", f"Returned {gid}")
-    _bump_rev("gatepassRev")
-    return jsonify({"gatePass": _serialize_gatepass(row)})
+        org, err = _resolve_public_org(conn, str(data.get("orgSlug") or data.get("org_slug") or ""))
+        if err:
+            return jsonify({"error": err[0], "needOrg": err[2]}), err[1]
+        gp = _complete_gatepass_return(conn, org["id"], gid, "Gate Kiosk", note)
+        if not gp:
+            return jsonify({"error": "Material gate pass not found"}), 404
+    return jsonify({"gatePass": gp})
 
 
 @app.post("/api/gate-passes/<gid>/status")
 @auth_required("gatepasses", "rw")
-def api_update_gate_pass_status(conn, user, gid):
+def api_update_gate_pass_status(conn, org, user, gid):
+    oid = org["id"]
     data = request.get_json(silent=True) or {}
     status = str(data.get("status") or "Verified").strip()
     actor = user.get("full_name") or user["username"]
     with conn.cursor() as cur:
         cur.execute(
-            "UPDATE material_gate_passes SET status=%s, verified_by=%s, verified_at=NOW(), updated_at=NOW() WHERE id=%s RETURNING *",
-            (status, actor, gid),
+            "UPDATE material_gate_passes SET status=%s, verified_by=%s, verified_at=NOW(), updated_at=NOW() WHERE id=%s AND org_id=%s RETURNING *",
+            (status, actor, gid, oid),
         )
         row = cur.fetchone()
         if not row:
             return jsonify({"error": "Material gate pass not found"}), 404
-    _audit(conn, user["username"], "gatepass_status", f"{gid} -> {status}")
-    _bump_rev("gatepassRev")
+    _audit(conn, oid, user["username"], "gatepass_status", f"{gid} -> {status}")
+    _bump_rev(oid, "gatepassRev")
     return jsonify({"gatePass": _serialize_gatepass(row)})
 
 
 @app.post("/api/gate-passes/<gid>/photos")
+@auth_required("gatepasses", "rw")
+def api_auth_append_gp_photos(conn, org, user, gid):
+    return _append_gp_photos(conn, org["id"], gid, request.get_json(silent=True) or {})
+
+
 @app.post("/api/public/gate-passes/<gid>/photos")
-def api_append_gate_pass_photos(gid):
+def api_public_append_gp_photos(gid):
     ensure_db_ready()
     data = request.get_json(silent=True) or {}
+    with get_conn() as conn:
+        org, err = _resolve_public_org(conn, str(data.get("orgSlug") or data.get("org_slug") or ""))
+        if err:
+            return jsonify({"error": err[0], "needOrg": err[2]}), err[1]
+        return _append_gp_photos(conn, org["id"], gid, data)
+
+
+def _append_gp_photos(conn, oid: str, gid: str, data: dict):
     kind = str(data.get("kind") or "material").lower()
     urls = [str(x).strip() for x in (data.get("urls") or []) if str(x).strip()]
     if not urls:
         return jsonify({"error": "No photo URLs provided"}), 400
     col = "bill_photos" if kind in ("bill", "challan", "bill_photo") else "material_photos"
     single_col = "bill_photo" if col == "bill_photos" else "material_photo"
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(f"SELECT {col}, {single_col} FROM material_gate_passes WHERE id=%s", (gid,))
-            row = cur.fetchone()
-            if not row:
-                return jsonify({"error": "Gate pass not found"}), 404
-            existing = list(row.get(col) or [])
-            merged = list(dict.fromkeys([*existing, *urls]))
-            primary = row.get(single_col) or merged[0]
-            cur.execute(
-                f"UPDATE material_gate_passes SET {col}=%s::jsonb, {single_col}=%s, updated_at=NOW() WHERE id=%s RETURNING *",
-                (json.dumps(merged), primary, gid),
-            )
-            updated = cur.fetchone()
-    _bump_rev("gatepassRev")
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT {col}, {single_col} FROM material_gate_passes WHERE id=%s AND org_id=%s", (gid, oid))
+        row = cur.fetchone()
+        if not row:
+            return jsonify({"error": "Gate pass not found"}), 404
+        merged = list(dict.fromkeys([*(row.get(col) or []), *urls]))
+        primary = row.get(single_col) or merged[0]
+        cur.execute(
+            f"UPDATE material_gate_passes SET {col}=%s::jsonb, {single_col}=%s, updated_at=NOW() WHERE id=%s AND org_id=%s RETURNING *",
+            (json.dumps(merged), primary, gid, oid),
+        )
+        updated = cur.fetchone()
+    _bump_rev(oid, "gatepassRev")
     return jsonify({"gatePass": _serialize_gatepass(updated)})
 
 
 # ---------------------------------------------------------------------------
-# Notifications: Strictly Filtered History, Live Feed, SSE, Sound & Ringtone Config
+# Notifications (Strictly Tenant + User/Dept Isolated) & Sound Config
 # ---------------------------------------------------------------------------
 def _serialize_notif_for_user(row: dict, username: str) -> dict:
     uname_cf = username.casefold()
     read_by = [str(x).casefold() for x in (row.get("read_by") or [])]
     return {
         "id": row["id"],
+        "orgId": row.get("org_id", DEFAULT_ORG_ID),
         "ts": _iso(row.get("ts")),
         "kind": row.get("kind", "info"),
         "level": row.get("level", "info"),
@@ -2016,46 +2816,47 @@ def _serialize_notif_for_user(row: dict, username: str) -> dict:
 
 @app.get("/api/notifications/history")
 @auth_required()
-def api_notif_history(conn, user):
+def api_notif_history(conn, org, user):
+    oid = org["id"]
     with conn.cursor() as cur:
-        cur.execute("SELECT * FROM notification_events ORDER BY ts DESC LIMIT 200")
+        cur.execute("SELECT * FROM notification_events WHERE org_id=%s ORDER BY ts DESC LIMIT 200", (oid,))
         rows = cur.fetchall()
     visible = [_serialize_notif_for_user(r, user["username"]) for r in rows if event_visible_to_user(r, user)]
-    unread_count = sum(1 for n in visible if not n["read"])
-    return jsonify({"notifications": visible, "unread": unread_count})
+    return jsonify({"notifications": visible, "unread": sum(1 for n in visible if not n["read"])})
 
 
 @app.post("/api/notifications/history")
 @auth_required()
-def api_notif_mark_read(conn, user):
+def api_notif_mark_read(conn, org, user):
+    oid = org["id"]
     data = request.get_json(silent=True) or {}
     action = str(data.get("action") or "read").lower()
     nid = str(data.get("id") or "").strip()
     uname_cf = user["username"].casefold()
     with conn.cursor() as cur:
         if action in ("clear_all", "read_all") or not nid:
-            cur.execute("SELECT id, target_usernames, target_department, factory, meta, read_by FROM notification_events ORDER BY ts DESC LIMIT 300")
+            cur.execute("SELECT id, org_id, target_usernames, target_department, factory, meta, read_by FROM notification_events WHERE org_id=%s ORDER BY ts DESC LIMIT 300", (oid,))
             for row in cur.fetchall():
                 if event_visible_to_user(row, user):
                     rb = list(dict.fromkeys([*(row.get("read_by") or []), uname_cf]))
-                    cur.execute("UPDATE notification_events SET read_by=%s::jsonb WHERE id=%s", (json.dumps(rb), row["id"]))
+                    cur.execute("UPDATE notification_events SET read_by=%s::jsonb WHERE id=%s AND org_id=%s", (json.dumps(rb), row["id"], oid))
         else:
-            cur.execute("SELECT read_by FROM notification_events WHERE id=%s", (nid,))
+            cur.execute("SELECT read_by FROM notification_events WHERE id=%s AND org_id=%s", (nid, oid))
             row = cur.fetchone()
             if row:
                 rb = list(dict.fromkeys([*(row.get("read_by") or []), uname_cf]))
-                cur.execute("UPDATE notification_events SET read_by=%s::jsonb WHERE id=%s", (json.dumps(rb), nid))
-    _bump_rev("notifRev", usernames=[user["username"]])
+                cur.execute("UPDATE notification_events SET read_by=%s::jsonb WHERE id=%s AND org_id=%s", (json.dumps(rb), nid, oid))
+    _bump_rev(oid, "notifRev", usernames=[user["username"]])
     return jsonify({"ok": True})
 
 
 @app.get("/api/live-alerts-feed")
 @auth_required()
-def api_live_alerts_feed(conn, user):
-    """Polling feed used by Android AlertMonitorService & browser fallback — strictly per-user filtered!"""
+def api_live_alerts_feed(conn, org, user):
+    oid = org["id"]
     since_ts = str(request.args.get("since") or "").strip()
     with conn.cursor() as cur:
-        cur.execute("SELECT * FROM notification_events ORDER BY ts DESC LIMIT 50")
+        cur.execute("SELECT * FROM notification_events WHERE org_id=%s ORDER BY ts DESC LIMIT 50", (oid,))
         rows = cur.fetchall()
     items = []
     for r in rows:
@@ -2070,27 +2871,26 @@ def api_live_alerts_feed(conn, user):
 
 @app.get("/api/live-pulse")
 @auth_required()
-def api_live_pulse(conn, user):
+def api_live_pulse(conn, org, user):
+    oid = org["id"]
     uname_cf = user["username"].casefold()
     with conn.cursor() as cur:
-        cur.execute("SELECT COALESCE(MAX(updated_at)::text, '') AS mv, COUNT(*) AS vc FROM visitor_passes")
+        cur.execute("SELECT COALESCE(MAX(updated_at)::text, '') AS mv, COUNT(*) AS vc FROM visitor_passes WHERE org_id=%s", (oid,))
         vrow = cur.fetchone() or {}
-        cur.execute("SELECT COALESCE(MAX(updated_at)::text, '') AS mg, COUNT(*) AS gc FROM material_gate_passes")
+        cur.execute("SELECT COALESCE(MAX(updated_at)::text, '') AS mg, COUNT(*) AS gc FROM material_gate_passes WHERE org_id=%s", (oid,))
         grow = cur.fetchone() or {}
-        cur.execute("SELECT id, ts, factory, target_department, target_usernames, meta, read_by FROM notification_events ORDER BY ts DESC LIMIT 100")
+        cur.execute("SELECT id, org_id, ts, factory, target_department, target_usernames, meta, read_by FROM notification_events WHERE org_id=%s ORDER BY ts DESC LIMIT 100", (oid,))
         nrows = cur.fetchall() or []
     visible_notifs = [r for r in nrows if event_visible_to_user(r, user)]
-    unread_ids = [
-        r["id"] for r in visible_notifs
-        if uname_cf not in [str(x).casefold() for x in (r.get("read_by") or [])]
-    ]
+    unread_ids = [r["id"] for r in visible_notifs if uname_cf not in [str(x).casefold() for x in (r.get("read_by") or [])]]
     latest_notif_id = visible_notifs[0]["id"] if visible_notifs else ""
+    revs = _ORG_REVISIONS[oid]
     return jsonify(
         {
-            "dataRev": _REVISIONS["dataRev"],
-            "visitorRev": f"{_REVISIONS['visitorRev']}|{vrow.get('mv','')}|{vrow.get('vc',0)}",
-            "gatepassRev": f"{_REVISIONS['gatepassRev']}|{grow.get('mg','')}|{grow.get('gc',0)}",
-            "notifRev": f"{int(_USER_NOTIF_REV.get(uname_cf, 0)) + int(_REVISIONS['notifRev'])}|{latest_notif_id}|{len(unread_ids)}",
+            "dataRev": revs["dataRev"],
+            "visitorRev": f"{revs['visitorRev']}|{vrow.get('mv','')}|{vrow.get('vc',0)}",
+            "gatepassRev": f"{revs['gatepassRev']}|{grow.get('mg','')}|{grow.get('gc',0)}",
+            "notifRev": f"{int(_USER_NOTIF_REV.get((oid, uname_cf), 0)) + int(revs['notifRev'])}|{latest_notif_id}|{len(unread_ids)}",
             "unreadCount": len(unread_ids),
             "serverTime": datetime.now(timezone.utc).isoformat(),
         }
@@ -2099,19 +2899,19 @@ def api_live_pulse(conn, user):
 
 @app.get("/api/live-stream")
 @auth_required()
-def api_live_stream(conn, user):
+def api_live_stream(conn, org, user):
+    oid = org["id"]
     sid = uuid.uuid4().hex
     q_obj: queue.Queue = queue.Queue(maxsize=100)
     with _SSE_LOCK:
-        _SSE_SUBSCRIBERS[sid] = (q_obj, user["username"], user.get("dept") or "", user.get("factory") or "")
+        _SSE_SUBSCRIBERS[sid] = (q_obj, oid, user["username"], user.get("dept") or "", user.get("factory") or "")
 
     def stream():
         try:
-            yield f"event: hello\ndata: {json.dumps({'ok': True, 'user': user['username']})}\n\n"
+            yield f"event: hello\ndata: {json.dumps({'ok': True, 'user': user['username'], 'org': org['slug']})}\n\n"
             while True:
                 try:
-                    msg = q_obj.get(timeout=20)
-                    yield msg
+                    yield q_obj.get(timeout=20)
                 except queue.Empty:
                     yield ": keepalive\n\n"
         finally:
@@ -2127,27 +2927,28 @@ def api_live_stream(conn, user):
 @app.get("/api/notifications/sounds")
 @app.post("/api/notifications/sounds")
 @auth_required()
-def api_notif_sounds(conn, user):
+def api_notif_sounds(conn, org, user):
+    oid = org["id"]
     if request.method == "GET":
-        global_cfg = _get_state(conn, "sound_config", dict(DEFAULT_SOUND_CONFIG)) or dict(DEFAULT_SOUND_CONFIG)
+        global_cfg = _get_org_state(conn, oid, "sound_config", dict(DEFAULT_SOUND_CONFIG)) or dict(DEFAULT_SOUND_CONFIG)
         with conn.cursor() as cur:
-            cur.execute("SELECT prefs FROM user_notification_prefs WHERE username=%s", (user["username"],))
+            cur.execute("SELECT prefs FROM user_notification_prefs WHERE org_id=%s AND username=%s", (oid, user["username"]))
             row = cur.fetchone()
         return jsonify({"soundConfig": global_cfg, "userPrefs": row["prefs"] if row else {}})
 
     data = request.get_json(silent=True) or {}
     scope = str(data.get("scope") or ("global" if user["role"] == "Administrator" and data.get("applyGlobal") else "user"))
     if scope == "global" and user["role"] == "Administrator":
-        cur_cfg = _get_state(conn, "sound_config", dict(DEFAULT_SOUND_CONFIG)) or dict(DEFAULT_SOUND_CONFIG)
+        cur_cfg = _get_org_state(conn, oid, "sound_config", dict(DEFAULT_SOUND_CONFIG)) or dict(DEFAULT_SOUND_CONFIG)
         for k in ("enabled", "desktop_notifications", "volume", "visitor_entry", "visitor_status", "material_entry", "material_overdue", "quiet_hours"):
             if k in data:
                 cur_cfg[k] = data[k]
-        _set_state(conn, "sound_config", cur_cfg)
-        _bump_rev("dataRev")
+        _set_org_state(conn, oid, "sound_config", cur_cfg)
+        _bump_rev(oid, "dataRev")
         return jsonify({"soundConfig": cur_cfg})
 
     with conn.cursor() as cur:
-        cur.execute("SELECT prefs FROM user_notification_prefs WHERE username=%s", (user["username"],))
+        cur.execute("SELECT prefs FROM user_notification_prefs WHERE org_id=%s AND username=%s", (oid, user["username"]))
         row = cur.fetchone()
         prefs = dict(row["prefs"]) if row and isinstance(row["prefs"], dict) else {}
         for k in ("enabled", "desktop_notifications", "volume", "visitor_entry", "visitor_status", "material_entry", "material_overdue", "quiet_hours"):
@@ -2155,18 +2956,19 @@ def api_notif_sounds(conn, user):
                 prefs[k] = data[k]
         cur.execute(
             """
-            INSERT INTO user_notification_prefs (username, prefs, updated_at)
-            VALUES (%s, %s::jsonb, NOW())
-            ON CONFLICT (username) DO UPDATE SET prefs=EXCLUDED.prefs, updated_at=NOW()
+            INSERT INTO user_notification_prefs (org_id, username, prefs, updated_at)
+            VALUES (%s, %s, %s::jsonb, NOW())
+            ON CONFLICT (org_id, username) DO UPDATE SET prefs=EXCLUDED.prefs, updated_at=NOW()
             """,
-            (user["username"], json.dumps(prefs)),
+            (oid, user["username"], json.dumps(prefs)),
         )
     return jsonify({"userPrefs": prefs})
 
 
 @app.post("/api/notifications/ringtones")
 @auth_required()
-def api_upload_ringtone(conn, user):
+def api_upload_ringtone(conn, org, user):
+    oid = org["id"]
     f = request.files.get("file") or (next(iter(request.files.values()), None))
     if not f:
         return jsonify({"error": "No audio file selected"}), 400
@@ -2174,25 +2976,27 @@ def api_upload_ringtone(conn, user):
     ext = Path(orig).suffix.lower()
     if ext not in (".mp3", ".wav", ".ogg", ".m4a", ".aac", ".webm"):
         return jsonify({"error": "Supported formats: mp3, wav, ogg, m4a, aac"}), 400
-    ring_dir = UPLOAD_DIR / "ringtones"
+    safe_org = re.sub(r"[^a-zA-Z0-9_-]", "", oid) or DEFAULT_ORG_ID
+    ring_dir = UPLOAD_DIR / safe_org / "ringtones"
     ring_dir.mkdir(parents=True, exist_ok=True)
     safe_stem = re.sub(r"[^a-zA-Z0-9_-]", "", Path(orig).stem)[:32] or "ringtone"
     fname = f"{safe_stem}-{secrets.token_hex(4)}{ext}"
     f.save(ring_dir / fname)
-    cfg = _get_state(conn, "sound_config", dict(DEFAULT_SOUND_CONFIG)) or dict(DEFAULT_SOUND_CONFIG)
+    cfg = _get_org_state(conn, oid, "sound_config", dict(DEFAULT_SOUND_CONFIG)) or dict(DEFAULT_SOUND_CONFIG)
     tones = list(cfg.get("custom_ringtones") or [])
-    entry = {"id": fname, "name": Path(orig).stem[:40] or fname, "url": f"/api/notifications/ringtones/{fname}"}
+    entry = {"id": fname, "name": Path(orig).stem[:40] or fname, "url": f"/api/notifications/ringtones/{safe_org}/{fname}"}
     tones.append(entry)
     cfg["custom_ringtones"] = tones[-20:]
-    _set_state(conn, "sound_config", cfg)
-    _bump_rev("dataRev")
+    _set_org_state(conn, oid, "sound_config", cfg)
+    _bump_rev(oid, "dataRev")
     return jsonify({"ringtone": entry, "custom_ringtones": cfg["custom_ringtones"]})
 
 
-@app.get("/api/notifications/ringtones/<path:filename>")
-def api_serve_ringtone(filename):
+@app.get("/api/notifications/ringtones/<org_id>/<path:filename>")
+def api_serve_ringtone(org_id, filename):
+    safe_org = re.sub(r"[^a-zA-Z0-9_-]", "", org_id) or DEFAULT_ORG_ID
     safe = Path(filename).name
-    ring_dir = UPLOAD_DIR / "ringtones"
+    ring_dir = UPLOAD_DIR / safe_org / "ringtones"
     target = (ring_dir / safe).resolve()
     if not target.exists() or target.parent != ring_dir.resolve():
         return jsonify({"error": "Ringtone not found"}), 404
@@ -2200,40 +3004,28 @@ def api_serve_ringtone(filename):
 
 
 # ---------------------------------------------------------------------------
-# Backups & Audit Logs
+# Backups (Platform Archive Helpers + Org Export)
 # ---------------------------------------------------------------------------
-@app.get("/api/backups")
-@auth_required("backups", "ro")
-def api_list_backups(conn, user):
+def _list_backups_resp():
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     items = []
     for p in sorted(BACKUP_DIR.glob("gatepass-*.tar.gz"), key=lambda x: x.stat().st_mtime, reverse=True):
         st = p.stat()
-        items.append(
-            {
-                "name": p.name,
-                "size": st.st_size,
-                "created_at": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
-            }
-        )
+        items.append({"name": p.name, "size": st.st_size, "created_at": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat()})
     return jsonify({"backups": items})
 
 
-@app.post("/api/backups")
-@auth_required("backups", "rw")
-def api_run_backup(conn, user):
+def _run_backup_resp(conn, org_id: str, actor: str):
     try:
         res = subprocess.run([sys.executable, str(APP_DIR / "backup.py"), "manual"], capture_output=True, text=True, check=True, timeout=180)
         name = res.stdout.strip().splitlines()[-1] if res.stdout.strip() else "backup created"
-        _audit(conn, user["username"], "backup", f"Created backup {name}")
+        _audit(conn, org_id, actor, "backup", f"Created backup {name}")
         return jsonify({"ok": True, "name": name})
     except Exception as exc:
         return jsonify({"error": f"Backup failed: {exc}"}), 500
 
 
-@app.get("/api/backups/<path:name>")
-@auth_required("backups", "ro")
-def api_download_backup(conn, user, name):
+def _download_backup_resp(name: str):
     safe = Path(name).name
     target = (BACKUP_DIR / safe).resolve()
     if not target.exists() or target.parent != BACKUP_DIR.resolve():
@@ -2241,8 +3033,45 @@ def api_download_backup(conn, user, name):
     return send_file(target, as_attachment=True, download_name=safe)
 
 
+@app.get("/api/backups")
+@auth_required("backups", "ro")
+def api_org_list_backups(conn, org, user):
+    """Export tenant JSON snapshot info (only Super Admin accesses full cross-org DB tarball)."""
+    oid = org["id"]
+    with conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) AS vc FROM visitor_passes WHERE org_id=%s", (oid,))
+        vc = int((cur.fetchone() or {}).get("vc", 0))
+        cur.execute("SELECT COUNT(*) AS gc FROM material_gate_passes WHERE org_id=%s", (oid,))
+        gc = int((cur.fetchone() or {}).get("gc", 0))
+    return jsonify({"orgBackupAvailable": True, "counts": {"visitors": vc, "gatePasses": gc}})
+
+
+@app.get("/api/backups/export-json")
+@auth_required("backups", "ro")
+def api_org_export_json(conn, org, user):
+    oid = org["id"]
+    with conn.cursor() as cur:
+        cur.execute("SELECT * FROM visitor_passes WHERE org_id=%s ORDER BY entry_time DESC", (oid,))
+        vs = [_serialize_visitor(r) for r in (cur.fetchall() or [])]
+        cur.execute("SELECT * FROM material_gate_passes WHERE org_id=%s ORDER BY entry_time DESC", (oid,))
+        gs = [_serialize_gatepass(r) for r in (cur.fetchall() or [])]
+    payload = {
+        "exportedAt": datetime.now(timezone.utc).isoformat(),
+        "organization": _serialize_org(org),
+        "departments": _get_org_state(conn, oid, "departments", []),
+        "factories": _get_org_state(conn, oid, "factories", []),
+        "visitors": vs,
+        "gatePasses": gs,
+    }
+    raw = json.dumps(payload, indent=2).encode("utf-8")
+    resp = make_response(raw)
+    resp.headers["Content-Type"] = "application/json"
+    resp.headers["Content-Disposition"] = f'attachment; filename="gatepass-{org["slug"]}-export.json"'
+    return resp
+
+
 # ---------------------------------------------------------------------------
-# Mobile App Distribution (Android APK, Apple .mobileconfig WebClip, iOS Xcode ZIP, CA Cert)
+# Mobile Distribution (Android APK, Tenant-Aware .mobileconfig, iOS Xcode ZIP)
 # ---------------------------------------------------------------------------
 @app.get("/ca.crt")
 @app.get("/shree-ca.crt")
@@ -2254,11 +3083,7 @@ def serve_ca_cert():
 
 
 def _find_apk_path() -> Path | None:
-    for cand in (
-        DOWNLOADS_DIR / "shree-gatepass.apk",
-        DOWNLOADS_DIR / "Shree-GatePass.apk",
-        APP_DIR / "Shree-GatePass.apk",
-    ):
+    for cand in (DOWNLOADS_DIR / "shree-gatepass.apk", DOWNLOADS_DIR / "Shree-GatePass.apk", APP_DIR / "Shree-GatePass.apk"):
         if cand.exists() and cand.stat().st_size > 10000:
             return cand
     return None
@@ -2268,12 +3093,14 @@ def _find_apk_path() -> Path | None:
 def api_apk_status():
     apk = _find_apk_path()
     ios_zip = (DOWNLOADS_DIR / "shree-gatepass-ios.zip").exists()
+    org_q = str(request.args.get("org") or "").strip()
+    qs = f"?org={org_q}" if org_q else ""
     return jsonify(
         {
             "apkAvailable": bool(apk),
             "apkSizeBytes": apk.stat().st_size if apk else 0,
             "apkUrl": "/download/shree-gatepass.apk",
-            "iosMobileconfigUrl": "/download/shree-gatepass-ios.mobileconfig",
+            "iosMobileconfigUrl": f"/download/shree-gatepass-ios.mobileconfig{qs}",
             "iosZipAvailable": ios_zip,
             "iosZipUrl": "/download/shree-gatepass-ios.zip",
         }
@@ -2297,18 +3124,13 @@ def download_ios_zip():
 
 
 def build_ios_mobileconfig(server_url: str, app_name: str = "Shree GatePass", icon_bytes: bytes | None = None, ca_bytes: bytes | None = None) -> bytes:
-    """Build signed/valid Apple iOS/iPadOS .mobileconfig Web Clip (+ optional Root CA) XML profile."""
     clean_url = server_url.rstrip("/") + "/"
     icon_b64 = base64.b64encode(icon_bytes).decode("ascii") if icon_bytes else ""
     root_uuid = str(uuid.uuid4()).upper()
     clip_uuid = str(uuid.uuid4()).upper()
     ca_uuid = str(uuid.uuid4()).upper()
 
-    icon_block = (
-        f"      <key>Icon</key>\n      <data>\n{icon_b64}\n      </data>\n"
-        if icon_b64
-        else ""
-    )
+    icon_block = f"      <key>Icon</key>\n      <data>\n{icon_b64}\n      </data>\n" if icon_b64 else ""
     ca_payload = ""
     if ca_bytes:
         ca_b64 = base64.b64encode(ca_bytes).decode("ascii")
@@ -2374,7 +3196,7 @@ def build_ios_mobileconfig(server_url: str, app_name: str = "Shree GatePass", ic
   <key>PayloadIdentifier</key>
   <string>com.shree.gatepass.profile</string>
   <key>PayloadOrganization</key>
-  <string>Shree GatePass</string>
+  <string>{xml_esc.escape(app_name)}</string>
   <key>PayloadRemovalDisallowed</key>
   <false/>
   <key>PayloadType</key>
@@ -2393,17 +3215,20 @@ def build_ios_mobileconfig(server_url: str, app_name: str = "Shree GatePass", ic
 def download_ios_mobileconfig():
     proto = request.headers.get("X-Forwarded-Proto") or request.scheme or "https"
     host = request.headers.get("X-Forwarded-Host") or request.host
-    base_url = f"{proto}://{host}/"
-    icon_bytes = None
-    icon_file = STATIC_DIR / "icons" / "icon-512.png"
-    if icon_file.exists():
-        icon_bytes = icon_file.read_bytes()
-    ca_bytes = None
-    for cand in (SECRETS_DIR / "ca.crt", Path("/app/secrets/ca.crt")):
-        if cand.exists():
-            ca_bytes = cand.read_bytes()
-            break
-    profile = build_ios_mobileconfig(base_url, "Shree GatePass", icon_bytes=icon_bytes, ca_bytes=ca_bytes)
+    org_q = str(request.args.get("org") or "").strip()
+    app_title = "Shree GatePass"
+    path_suffix = "/"
+    if org_q:
+        ensure_db_ready()
+        with get_conn() as conn:
+            org = _find_org_by_slug_or_id(conn, org_q)
+            if org:
+                app_title = org["name"]
+                path_suffix = f"/c/{org['slug']}/"
+    base_url = f"{proto}://{host}{path_suffix}"
+    icon_bytes = (STATIC_DIR / "icons" / "icon-512.png").read_bytes() if (STATIC_DIR / "icons" / "icon-512.png").exists() else None
+    ca_bytes = next((c.read_bytes() for c in (SECRETS_DIR / "ca.crt", Path("/app/secrets/ca.crt")) if c.exists()), None)
+    profile = build_ios_mobileconfig(base_url, app_title, icon_bytes=icon_bytes, ca_bytes=ca_bytes)
     resp = make_response(profile)
     resp.headers["Content-Type"] = "application/x-apple-aspen-config"
     resp.headers["Content-Disposition"] = 'attachment; filename="Shree-GatePass-iPhone-iPad.mobileconfig"'
