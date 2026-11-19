@@ -1,0 +1,70 @@
+{
+  "id": "/?source=pwa",
+  "name": "Shree GatePass · Visitor & Material Management",
+  "short_name": "Shree GatePass",
+  "description": "Standalone Security Gate, Visitor Approval Lifecycle & Material Gate Pass Management System",
+  "start_url": "/?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#051433",
+  "theme_color": "#157a54",
+  "prefer_related_applications": false,
+  "categories": ["business", "security", "productivity"],
+  "icons": [
+    {
+      "src": "/static/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icons/icon-maskable-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/static/icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Visitor Pass",
+      "short_name": "Visitors",
+      "description": "Approve, check in, and check out factory visitors",
+      "url": "/?view=visitors",
+      "icons": [{ "src": "/static/icons/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Material Gate Pass",
+      "short_name": "Material",
+      "description": "Track Material IN/OUT and returnable items",
+      "url": "/?view=gatepasses",
+      "icons": [{ "src": "/static/icons/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Gate Kiosk Portal",
+      "short_name": "Gate Kiosk",
+      "description": "Quick Visitor & Material gate entry without login",
+      "url": "/portal",
+      "icons": [{ "src": "/static/icons/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Notifications",
+      "short_name": "Alerts",
+      "description": "Targeted visitor & overdue material alerts",
+      "url": "/?view=notifications",
+      "icons": [{ "src": "/static/icons/icon-192.png", "sizes": "192x192" }]
+    }
+  ]
+}

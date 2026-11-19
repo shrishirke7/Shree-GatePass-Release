@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly Shree GatePass backup timer
+
+[Timer]
+OnCalendar=Sun *-*-* 03:15:00
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

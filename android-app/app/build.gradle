@@ -1,0 +1,44 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.shree.gatepass'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.shree.gatepass"
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName "1.0.0"
+    }
+
+    signingConfigs {
+        release {
+            def ksFile = file("release-keystore.jks")
+            if (ksFile.exists()) {
+                storeFile ksFile
+                storePassword System.getenv("GATEPASS_KS_PASS") ?: "shreeGate2026!"
+                keyAlias System.getenv("GATEPASS_KEY_ALIAS") ?: "gatepasskey"
+                keyPassword System.getenv("GATEPASS_KS_PASS") ?: "shreeGate2026!"
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            def ksFile = file("release-keystore.jks")
+            signingConfig ksFile.exists() ? signingConfigs.release : signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+}

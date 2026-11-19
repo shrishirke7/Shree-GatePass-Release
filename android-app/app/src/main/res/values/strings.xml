@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Shree GatePass</string>
+    <string name="setup_title">Connect to Shree GatePass</string>
+    <string name="setup_subtitle">Enter your factory GatePass server URL, IP or LAN domain once.</string>
+</resources>

@@ -1,0 +1,9 @@
+[Unit]
+Description=Shree GatePass %i database and upload backup
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/shree-gatepass
+ExecStart=/bin/bash /opt/shree-gatepass/backup.sh %i

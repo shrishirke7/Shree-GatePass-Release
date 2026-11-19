@@ -1,0 +1,1885 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#157a54">
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" type="image/png" sizes="192x192" href="/static/icons/icon-192.png?v=1">
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/icons/apple-touch-icon-180.png?v=1">
+  <link rel="shortcut icon" href="/favicon.ico?v=1">
+  <title>Shree GatePass · Visitor &amp; Material Management</title>
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js" defer></script>
+  <style>
+    :root {
+      --bg: #eff4f0;
+      --surface: #ffffff;
+      --surface-soft: #f7faf8;
+      --sidebar-bg: #0f2920;
+      --sidebar-hover: rgba(255,255,255,0.09);
+      --sidebar-active: #157a54;
+      --text: #142820;
+      --muted: #61746b;
+      --border: #dde6e0;
+      --accent: #157a54;
+      --accent-dark: #0f5c3f;
+      --accent-soft: #e6f5ee;
+      --gold: #c9a145;
+      --blue: #1d5fb8;
+      --amber: #c9770e;
+      --danger: #c63636;
+      --radius: 14px;
+      --shadow: 0 10px 28px rgba(15, 42, 30, 0.06);
+      --font: "Plus Jakarta Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      font-family: var(--font);
+      background: var(--bg);
+      color: var(--text);
+      font-size: 14px;
+      overflow-x: hidden;
+    }
+    .hidden { display: none !important; }
+    button, input, select, textarea { font: inherit; }
+
+    /* Login Overlay */
+    #loginOverlay {
+      position: fixed;
+      inset: 0;
+      z-index: 2000;
+      background: radial-gradient(circle at top right, #cfe7d9 0%, #edf3ef 58%);
+      display: grid;
+      place-items: center;
+      padding: 18px;
+      overflow-y: auto;
+    }
+    .login-card {
+      width: min(100%, 440px);
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 30px 28px;
+      box-shadow: 0 24px 60px rgba(10, 32, 22, 0.14);
+      text-align: center;
+    }
+    .login-logo {
+      width: 74px;
+      height: 74px;
+      border-radius: 18px;
+      border: 2px solid var(--gold);
+      box-shadow: 0 10px 24px rgba(5,20,51,.22);
+      margin-bottom: 10px;
+    }
+    .login-card h1 { margin: 4px 0 4px; font-size: 24px; font-weight: 800; }
+    .login-sub { font-size: 13px; color: var(--muted); margin: 0 0 20px; }
+    .l-field { text-align: left; margin-bottom: 12px; }
+    .l-field label { display: block; font-size: 12px; font-weight: 700; color: var(--muted); margin-bottom: 5px; }
+    .l-field input {
+      width: 100%; padding: 11px 12px; border-radius: 10px;
+      border: 1px solid #cbd9d1; outline: none; font-size: 14px;
+    }
+    .l-field input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(21,122,84,.12); }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 9px 14px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: #fff;
+      color: var(--text);
+      font-weight: 700;
+      font-size: 13px;
+      cursor: pointer;
+      text-decoration: none;
+      transition: background .12s ease, transform .1s ease;
+    }
+    .btn:hover { background: var(--surface-soft); }
+    .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .btn-primary:hover { background: var(--accent-dark); }
+    .btn-blue { background: var(--blue); border-color: var(--blue); color: #fff; }
+    .btn-amber { background: #d97706; border-color: #d97706; color: #fff; }
+    .btn-danger { background: #dc2626; border-color: #dc2626; color: #fff; }
+    .btn-soft { background: var(--accent-soft); border-color: #b7decb; color: var(--accent-dark); }
+    .btn-full { width: 100%; }
+    .login-pill-link {
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+      width: 100%; padding: 11px 14px; margin-top: 10px;
+      border-radius: 999px; border: 1px solid #c7d9cf; background: #f8fbf9;
+      color: var(--text); font-weight: 700; font-size: 13px; text-decoration: none; cursor: pointer;
+    }
+    .login-pill-link.apk { background: #e8f8f0; border-color: #9dd4b8; color: #0e593d; }
+
+    /* App Shell Layout */
+    .app-shell {
+      display: grid;
+      grid-template-columns: 248px minmax(0, 1fr);
+      min-height: 100vh;
+    }
+    .sidebar {
+      background: var(--sidebar-bg);
+      color: #e7f2ec;
+      display: flex;
+      flex-direction: column;
+      padding: 16px 12px;
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow-y: auto;
+    }
+    .sb-brand {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      padding: 6px 8px 14px;
+      border-bottom: 1px solid rgba(255,255,255,0.1);
+      margin-bottom: 12px;
+    }
+    .sb-brand img {
+      width: 40px; height: 40px; border-radius: 10px; border: 1.5px solid var(--gold); flex-shrink: 0;
+    }
+    .sb-title { font-size: 16px; font-weight: 800; color: #fff; line-height: 1.2; }
+    .sb-sub { font-size: 10px; color: #9fc2b1; letter-spacing: .08em; text-transform: uppercase; }
+    .nav-group-label {
+      font-size: 10px; font-weight: 800; letter-spacing: .1em; color: #84aa97;
+      text-transform: uppercase; padding: 10px 10px 4px;
+    }
+    .nav-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      width: 100%;
+      padding: 10px 12px;
+      margin-bottom: 3px;
+      border-radius: 10px;
+      border: 0;
+      background: transparent;
+      color: #d6e9df;
+      font-size: 13.5px;
+      font-weight: 600;
+      cursor: pointer;
+      text-align: left;
+    }
+    .nav-item:hover { background: var(--sidebar-hover); color: #fff; }
+    .nav-item.active { background: var(--sidebar-active); color: #fff; font-weight: 700; }
+    .nav-badge {
+      background: #ef4444; color: #fff; border-radius: 999px;
+      padding: 1px 7px; font-size: 11px; font-weight: 800;
+    }
+    .sb-footer {
+      margin-top: auto;
+      padding-top: 12px;
+      border-top: 1px solid rgba(255,255,255,0.1);
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    /* Main Column */
+    .main-col { display: flex; flex-direction: column; min-width: 0; }
+    .topbar {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 10px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 8px 12px;
+      position: sticky;
+      top: 0;
+      z-index: 40;
+    }
+    .tb-left { display: flex; align-items: center; gap: 10px; min-width: 0; flex-wrap: wrap; }
+    .hamburger {
+      display: none;
+      width: 36px; height: 36px; border-radius: 9px;
+      border: 1px solid var(--border); background: #fff; cursor: pointer; font-size: 18px; flex-shrink: 0;
+    }
+    .tb-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-left: auto; }
+    #userChip {
+      max-width: 180px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .bell-btn { position: relative; }
+    .bell-dot {
+      position: absolute; top: -5px; right: -5px;
+      background: #ef4444; color: #fff; border-radius: 999px;
+      padding: 1px 6px; font-size: 10.5px; font-weight: 800;
+    }
+    .content { padding: 18px; max-width: 1380px; width: 100%; }
+
+    /* Cards & Grids */
+    .page-hd {
+      display: flex; align-items: flex-start; justify-content: space-between;
+      gap: 12px; flex-wrap: wrap; margin-bottom: 16px;
+    }
+    .page-hd h1 { margin: 0; font-size: 22px; font-weight: 800; }
+    .page-hd p { margin: 3px 0 0; font-size: 13px; color: var(--muted); }
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(175px, 1fr));
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .kpi {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 16px;
+      box-shadow: var(--shadow);
+      border-left: 4px solid var(--accent);
+    }
+    .kpi-lbl { font-size: 11.5px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+    .kpi-val { font-size: 26px; font-weight: 800; margin-top: 4px; color: var(--text); }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+      box-shadow: var(--shadow);
+      margin-bottom: 14px;
+    }
+    .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .toolbar {
+      display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px;
+    }
+    .input, select.input {
+      padding: 8px 11px; border: 1px solid #cbd9d1; border-radius: 9px;
+      background: #fff; color: var(--text); outline: none; font-size: 13px;
+    }
+    .pill-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+    .pill-tab {
+      padding: 6px 12px; border-radius: 999px; border: 1px solid var(--border);
+      background: var(--surface-soft); font-size: 12px; font-weight: 700; cursor: pointer; color: var(--muted);
+    }
+    .pill-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+    /* Table */
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th {
+      text-align: left; padding: 10px 10px; font-size: 11px; font-weight: 800;
+      text-transform: uppercase; letter-spacing: .05em; color: var(--muted);
+      border-bottom: 2px solid var(--border); background: var(--surface-soft); white-space: nowrap;
+    }
+    td { padding: 11px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .badge {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 800; white-space: nowrap;
+    }
+    .b-pending { background: #fef3c7; color: #92400e; }
+    .b-approved { background: #dcfce7; color: #166534; }
+    .b-checkedin { background: #dbeafe; color: #1e40af; }
+    .b-checkedout { background: #e2e8f0; color: #334155; }
+    .b-rejected { background: #fee2e2; color: #991b1b; }
+    .b-overdue { background: #fee2e2; color: #b91c1c; }
+
+    /* Modal */
+    .modal-backdrop {
+      position: fixed; inset: 0; z-index: 3000;
+      background: rgba(9, 25, 18, 0.56);
+      display: grid; place-items: center; padding: 16px; overflow-y: auto;
+    }
+    .modal-card {
+      width: min(100%, 620px);
+      background: #fff;
+      border-radius: 18px;
+      padding: 20px 22px;
+      box-shadow: 0 24px 64px rgba(0,0,0,0.28);
+      max-height: 90vh;
+      overflow-y: auto;
+    }
+    .modal-hd {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid var(--border);
+    }
+    .modal-hd h2 { margin: 0; font-size: 18px; font-weight: 800; }
+    .form-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px; }
+    .f-group { display: flex; flex-direction: column; gap: 4px; }
+    .f-group.full { grid-column: 1 / -1; }
+    .f-group label { font-size: 12px; font-weight: 700; color: var(--muted); }
+    .f-group input, .f-group select, .f-group textarea {
+      width: 100%; padding: 9px 11px; border: 1px solid #cbd9d1; border-radius: 9px; font-size: 13.5px;
+    }
+
+    .thumb-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+    .thumb-mini {
+      width: 44px; height: 44px; border-radius: 8px; object-fit: cover;
+      border: 1px solid var(--border); cursor: pointer;
+    }
+
+    .toast {
+      position: fixed; bottom: 18px; right: 18px; max-width: 360px;
+      background: #0f2920; color: #fff; padding: 12px 16px; border-radius: 12px;
+      font-size: 13px; font-weight: 700; z-index: 5000; display: none;
+      box-shadow: 0 12px 30px rgba(0,0,0,0.24);
+    }
+
+    @media (max-width: 920px) {
+      .app-shell { grid-template-columns: 1fr; }
+      .sidebar {
+        position: fixed; left: -260px; top: 0; bottom: 0; width: 250px; z-index: 1500;
+        transition: left .2s ease;
+      }
+      .sidebar.open { left: 0; }
+      .hamburger { display: inline-grid; place-items: center; }
+      .grid-2 { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 580px) {
+      .form-2 { grid-template-columns: 1fr; }
+      .content { padding: 12px; }
+      .topbar { padding: 9px 12px; }
+      .tb-left { width: 100%; justify-content: flex-start; }
+      #globalFactoryFilter { max-width: 140px; font-size: 12px; padding: 6px 8px; }
+      .tb-right { width: 100%; justify-content: space-between; margin-left: 0; }
+      #userChip { max-width: 170px; font-size: 12px; }
+    }
+  </style>
+</head>
+<body>
+  <!-- LOGIN SCREEN -->
+  <div id="loginOverlay">
+    <div class="login-card">
+      <img class="login-logo" src="/static/icons/icon-192.png?v=1" alt="Shree GatePass">
+      <h1 id="loginCompanyName">Shree GatePass</h1>
+      <p class="login-sub">Visitor Approval Lifecycle &amp; Material Gate Pass Management</p>
+      <form id="loginForm" onsubmit="doLogin(event)">
+        <div class="l-field">
+          <label for="loginUser">Username</label>
+          <input id="loginUser" required autocomplete="username" placeholder="Enter your username">
+        </div>
+        <div class="l-field">
+          <label for="loginPass">Password</label>
+          <input id="loginPass" type="password" required autocomplete="current-password" placeholder="Enter password">
+        </div>
+        <p id="loginErr" style="color:var(--danger);font-size:12.5px;min-height:18px;margin:4px 0 8px"></p>
+        <button type="submit" id="loginBtn" class="btn btn-primary btn-full" style="padding:12px;font-size:15px">Sign In →</button>
+      </form>
+      <a class="login-pill-link" href="/portal">🪪 Security Gate Kiosk · Visitor &amp; Material Entry</a>
+      <button type="button" class="login-pill-link apk" onclick="openMobileInstallModal()">📱 Install Mobile App (Android APK &amp; iPhone/iPad)</button>
+      <div style="margin-top:14px">
+        <button type="button" class="btn" style="font-size:12px;border:0;color:var(--accent)" onclick="openRecoveryModal()">Forgot Administrator password?</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MAIN APPLICATION SHELL -->
+  <div id="appShell" class="app-shell hidden">
+    <aside class="sidebar" id="sidebar">
+      <div class="sb-brand">
+        <img src="/static/icons/icon-192.png?v=1" alt="Shree GatePass">
+        <div>
+          <div class="sb-title" id="sbCompany">Shree GatePass</div>
+          <div class="sb-sub">Visitor &amp; Material</div>
+        </div>
+      </div>
+
+      <div class="nav-group-label">Gate Operations</div>
+      <button class="nav-item active" data-view="dashboard" onclick="switchView('dashboard')"><span>🏠 Overview</span></button>
+      <button class="nav-item" data-view="visitors" onclick="switchView('visitors')"><span>🪪 Visitor Pass</span><span class="nav-badge hidden" id="sbBadgePending">0</span></button>
+      <button class="nav-item" data-view="gatepasses" onclick="switchView('gatepasses')"><span>📦 Material Gate Pass</span><span class="nav-badge hidden" id="sbBadgeOverdue">0</span></button>
+      <button class="nav-item" data-view="notifications" onclick="switchView('notifications')"><span>🔔 Notifications &amp; Sounds</span><span class="nav-badge hidden" id="sbBadgeNotif">0</span></button>
+
+      <div class="nav-group-label" id="adminNavGroup">Administration</div>
+      <button class="nav-item" data-view="users" onclick="switchView('users')"><span>👥 Users &amp; Import</span></button>
+      <button class="nav-item" data-view="departments" onclick="switchView('departments')"><span>🏛 Departments</span></button>
+      <button class="nav-item" data-view="factories" onclick="switchView('factories')"><span>🏭 Factories</span></button>
+      <button class="nav-item" data-view="backups" onclick="switchView('backups')"><span>💾 Backups</span></button>
+      <button class="nav-item" data-view="settings" onclick="switchView('settings')"><span>⚙ Settings</span></button>
+
+      <div class="sb-footer">
+        <a class="btn btn-soft btn-full" href="/portal" target="_blank">🪪 Open Gate Kiosk ↗</a>
+        <button type="button" class="btn btn-full" style="background:#173d2f;color:#d6eee2;border-color:#2a5a48" onclick="openMobileInstallModal()">📱 Android / iPhone App</button>
+        <button type="button" class="btn btn-full" style="background:transparent;color:#fca5a5;border-color:rgba(255,255,255,0.16)" onclick="doLogout()">Sign Out</button>
+      </div>
+    </aside>
+
+    <div class="main-col">
+      <header class="topbar">
+        <div class="tb-left">
+          <button type="button" class="hamburger" onclick="toggleSidebar()" aria-label="Menu">☰</button>
+          <span style="font-weight:800;font-size:15px" id="topbarViewTitle">Overview</span>
+          <select id="globalFactoryFilter" class="input" onchange="renderCurrentView()" aria-label="Filter Factory">
+            <option value="">All Factories</option>
+          </select>
+        </div>
+        <div class="tb-right">
+          <button type="button" class="btn bell-btn" onclick="switchView('notifications')">
+            🔔 Alerts <span class="bell-dot hidden" id="topBellDot">0</span>
+          </button>
+          <span style="font-weight:700;font-size:13px;padding:6px 10px;border-radius:999px;background:var(--accent-soft);color:var(--accent-dark)" id="userChip">User</span>
+        </div>
+      </header>
+
+      <main class="content">
+        <!-- OVERVIEW VIEW -->
+        <section id="view-dashboard" class="view-pane">
+          <div class="page-hd">
+            <div>
+              <h1>Gate Overview</h1>
+              <p>Live visitor approvals, active guests inside plant &amp; material movement summary.</p>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button type="button" class="btn btn-primary" onclick="openNewVisitorModal()">+ New Visitor Pass</button>
+              <button type="button" class="btn btn-amber" onclick="openNewMaterialModal()">+ Record Material IN / OUT</button>
+            </div>
+          </div>
+          <div class="kpi-grid" id="dashKpis"></div>
+          <div class="grid-2">
+            <div class="card">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+                <h2 style="margin:0;font-size:16px">🪪 Action Needed · Visitor Queue</h2>
+                <button class="btn" onclick="switchView('visitors')">View All →</button>
+              </div>
+              <div id="dashVisitorQueue"></div>
+            </div>
+            <div class="card">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+                <h2 style="margin:0;font-size:16px">📦 Pending Return &amp; Overdue Materials</h2>
+                <button class="btn" onclick="switchView('gatepasses')">View All →</button>
+              </div>
+              <div id="dashMaterialQueue"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- VISITOR PASS VIEW -->
+        <section id="view-visitors" class="view-pane hidden">
+          <div class="page-hd">
+            <div>
+              <h1>Visitor Pass Management</h1>
+              <p>4-Step Lifecycle: <b>Pending Approval</b> → <b>Approved</b> → <b>Checked In</b> → <b>Checked Out</b></p>
+            </div>
+            <button type="button" class="btn btn-primary" id="btnNewVisitor" onclick="openNewVisitorModal()">+ New Visitor Entry</button>
+          </div>
+          <div class="card">
+            <div class="toolbar">
+              <input id="vSearch" class="input" style="min-width:220px" placeholder="Search name, mobile, host, company…" oninput="renderVisitors()">
+              <div class="pill-tabs" id="vStatusTabs">
+                <button class="pill-tab active" onclick="setVTab('all', this)">All</button>
+                <button class="pill-tab" onclick="setVTab('Pending', this)">Pending Approval</button>
+                <button class="pill-tab" onclick="setVTab('Approved', this)">Approved</button>
+                <button class="pill-tab" onclick="setVTab('Checked In', this)">Checked In</button>
+                <button class="pill-tab" onclick="setVTab('Checked Out', this)">Checked Out</button>
+                <button class="pill-tab" onclick="setVTab('Rejected', this)">Rejected</button>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Pass / Time</th>
+                    <th>Visitor &amp; Company</th>
+                    <th>To Meet (Targeted)</th>
+                    <th>Photos</th>
+                    <th>Status &amp; Timeline</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="vTableBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- MATERIAL GATE PASS VIEW -->
+        <section id="view-gatepasses" class="view-pane hidden">
+          <div class="page-hd">
+            <div>
+              <h1>Material Gate Pass (IN / OUT)</h1>
+              <p>Track inward receipts, outward dispatches &amp; automated overdue reminders for returnable materials.</p>
+            </div>
+            <button type="button" class="btn btn-primary" id="btnNewMat" onclick="openNewMaterialModal()">+ New Material Entry</button>
+          </div>
+          <div class="card">
+            <div class="toolbar">
+              <input id="mSearch" class="input" style="min-width:220px" placeholder="Search material, party, challan, vehicle…" oninput="renderGatePasses()">
+              <div class="pill-tabs" id="mStatusTabs">
+                <button class="pill-tab active" onclick="setMTab('all', this)">All</button>
+                <button class="pill-tab" onclick="setMTab('IN', this)">IN (Arrived)</button>
+                <button class="pill-tab" onclick="setMTab('OUT', this)">OUT (Dispatched)</button>
+                <button class="pill-tab" onclick="setMTab('PENDING_RET', this)">Pending Return</button>
+                <button class="pill-tab" onclick="setMTab('OVERDUE', this)">Overdue Only</button>
+                <button class="pill-tab" onclick="setMTab('RETURNED', this)">Returned</button>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Pass / Dir</th>
+                    <th>Material &amp; Qty</th>
+                    <th>Party / Challan</th>
+                    <th>Dept &amp; Recipient</th>
+                    <th>Photos (Mat / Bill)</th>
+                    <th>Returnable Status</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="mTableBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- NOTIFICATIONS & SOUNDS VIEW -->
+        <section id="view-notifications" class="view-pane hidden">
+          <div class="page-hd">
+            <div>
+              <h1>Notifications &amp; Alert Sounds</h1>
+              <p>Only notifications targeted specifically to <b>you</b> or your <b>department</b> appear here.</p>
+            </div>
+            <div class="pill-tabs">
+              <button class="pill-tab active" id="tabNInbox" onclick="switchNotifTab('inbox')">📥 My Targeted Inbox</button>
+              <button class="pill-tab" id="tabNSounds" onclick="switchNotifTab('sounds')">🔊 Sound, Ringtones &amp; Silent Rules</button>
+            </div>
+          </div>
+
+          <div id="notifInboxPane" class="card">
+            <div class="toolbar" style="justify-content:space-between">
+              <span style="font-size:13px;color:var(--muted)" id="notifCountText">0 unread alerts</span>
+              <button type="button" class="btn" onclick="markAllNotifsRead()">✓ Mark All Read</button>
+            </div>
+            <div id="notifInboxList"></div>
+          </div>
+
+          <div id="notifSoundsPane" class="card hidden">
+            <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid var(--border)">
+              <label style="display:flex;align-items:center;gap:7px;font-weight:700">
+                <input type="checkbox" id="sndMasterEnabled" onchange="saveSoundConfig()"> 🔊 Master Alert Sound Enabled
+              </label>
+              <label style="display:flex;align-items:center;gap:7px;font-weight:700">
+                <input type="checkbox" id="sndDesktopEnabled" onchange="requestDesktopAndSave()"> 🔔 Browser / Desktop Popups
+              </label>
+              <div style="display:flex;align-items:center;gap:8px;margin-left:auto">
+                <span style="font-size:12px;font-weight:700">Volume:</span>
+                <input type="range" id="sndVolume" min="0" max="1" step="0.1" value="0.9" onchange="saveSoundConfig()">
+              </div>
+            </div>
+
+            <div class="table-wrap" style="margin-bottom:16px">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Alert Enabled</th>
+                    <th>Event Category</th>
+                    <th>Ringtone Selection</th>
+                    <th>Test</th>
+                    <th>Silent Mode</th>
+                  </tr>
+                </thead>
+                <tbody id="soundMatrixBody"></tbody>
+              </table>
+            </div>
+
+            <div class="grid-2">
+              <div style="border:1px solid var(--border);border-radius:12px;padding:12px">
+                <h3 style="margin:0 0 8px;font-size:14px">🎵 Custom Ringtone Uploader</h3>
+                <p style="font-size:12px;color:var(--muted);margin:0 0 10px">Upload your own .mp3, .wav or .ogg tone to assign above.</p>
+                <div style="display:flex;gap:8px;flex-wrap:wrap">
+                  <input type="file" id="ringtoneFileInput" accept="audio/*">
+                  <button type="button" class="btn btn-primary" onclick="uploadCustomRingtone()">⬆ Upload Tone</button>
+                </div>
+              </div>
+              <div style="border:1px solid var(--border);border-radius:12px;padding:12px">
+                <h3 style="margin:0 0 8px;font-size:14px">🌙 Silent / Quiet Hours</h3>
+                <label style="display:flex;align-items:center;gap:7px;font-size:13px;font-weight:700;margin-bottom:8px">
+                  <input type="checkbox" id="qhEnabled" onchange="saveSoundConfig()"> Silence alert sounds during scheduled hours
+                </label>
+                <div style="display:flex;gap:8px;align-items:center">
+                  <input type="time" id="qhStart" class="input" value="22:00" onchange="saveSoundConfig()">
+                  <span>to</span>
+                  <input type="time" id="qhEnd" class="input" value="07:00" onchange="saveSoundConfig()">
+                </div>
+              </div>
+            </div>
+            <div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end" id="soundAdminSaveWrap">
+              <button type="button" class="btn btn-primary" onclick="saveSoundConfig(true)">Save as Organization Default</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- USERS & BULK IMPORT VIEW -->
+        <section id="view-users" class="view-pane hidden">
+          <div class="page-hd">
+            <div>
+              <h1>Users &amp; Bulk Import / Export</h1>
+              <p>Manage user roles, departments, factory restrictions, module permissions &amp; bulk Excel/CSV onboarding.</p>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button type="button" class="btn" onclick="downloadSampleUsersCsv()">📄 Sample Excel / CSV</button>
+              <button type="button" class="btn" onclick="triggerBulkUsersImport()">⬆ Import Excel / CSV</button>
+              <button type="button" class="btn" onclick="exportUsersFile()">⬇ Export Excel / CSV</button>
+              <button type="button" class="btn btn-primary" onclick="openUserModal()">+ Add User</button>
+            </div>
+          </div>
+          <input type="file" id="bulkUserFileInput" accept=".xlsx,.xls,.csv" class="hidden" onchange="handleBulkUsersFile(event)">
+          <div class="card">
+            <div class="toolbar">
+              <input id="uSearch" class="input" placeholder="Search username, full name, dept…" oninput="renderUsers()">
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>User</th>
+                    <th>Role / Gate Scope</th>
+                    <th>Department &amp; Factory</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="uTableBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- DEPARTMENTS VIEW -->
+        <section id="view-departments" class="view-pane hidden">
+          <div class="page-hd">
+            <div>
+              <h1>Departments</h1>
+              <p>Configure factory departments used in Visitor Pass routing and Material Gate Passes.</p>
+            </div>
+          </div>
+          <div class="card">
+            <div class="toolbar">
+              <input id="newDeptInput" class="input" placeholder="Add new department (e.g. Packaging)" style="min-width:240px">
+              <button type="button" class="btn btn-primary" onclick="addDepartment()">+ Add Department</button>
+            </div>
+            <div id="deptListWrap" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px"></div>
+          </div>
+        </section>
+
+        <!-- FACTORIES VIEW -->
+        <section id="view-factories" class="view-pane hidden">
+          <div class="page-hd">
+            <div>
+              <h1>Factories / Plants</h1>
+              <p>Manage factory codes, location titles, gate descriptions, and display order.</p>
+            </div>
+            <button type="button" class="btn btn-primary" onclick="openFactoryModal()">+ Add Factory</button>
+          </div>
+          <div class="card">
+            <div id="factoryListWrap"></div>
+          </div>
+        </section>
+
+        <!-- BACKUPS VIEW -->
+        <section id="view-backups" class="view-pane hidden">
+          <div class="page-hd">
+            <div>
+              <h1>Database &amp; Photo Backups</h1>
+              <p>Create, inspect, and download encrypted/compressed database + gate photo backup archives.</p>
+            </div>
+            <button type="button" class="btn btn-primary" id="btnCreateBackup" onclick="createManualBackup()">+ Create Manual Backup</button>
+          </div>
+          <div class="card">
+            <p style="font-size:12.5px;color:var(--muted);margin-top:0">Automatic daily/weekly/monthly snapshots run via systemd on Ubuntu. To restore an archive: <code>sudo bash restore.sh /opt/shree-gatepass/backups/&lt;archive&gt;.tar.gz</code></p>
+            <div id="backupListWrap">Loading backups…</div>
+          </div>
+        </section>
+
+        <!-- SETTINGS VIEW -->
+        <section id="view-settings" class="view-pane hidden">
+          <div class="page-hd">
+            <div>
+              <h1>Settings &amp; Account Security</h1>
+              <p>Customize company branding, default returnable reminder window &amp; password.</p>
+            </div>
+          </div>
+          <div class="grid-2">
+            <div class="card">
+              <h2 style="margin-top:0;font-size:16px">Workspace Settings</h2>
+              <div class="form-2">
+                <div class="f-group full"><label>Company / Brand Name</label><input id="setCompany"></div>
+                <div class="f-group full"><label>Site Domain (e.g. gatepass.local)</label><input id="setSiteName"></div>
+                <div class="f-group full"><label>Gate Kiosk Title</label><input id="setPortalTitle"></div>
+                <div class="f-group"><label>Default Returnable Days</label><input type="number" min="1" max="365" id="setRetDays"></div>
+              </div>
+              <div style="margin-top:14px">
+                <button type="button" class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
+              </div>
+            </div>
+            <div class="card">
+              <h2 style="margin-top:0;font-size:16px">Change My Password</h2>
+              <div class="form-2">
+                <div class="f-group full"><label>Current Password</label><input type="password" id="ownCurPw"></div>
+                <div class="f-group full"><label>New Password (min 8 chars)</label><input type="password" id="ownNewPw"></div>
+              </div>
+              <div style="margin-top:14px">
+                <button type="button" class="btn btn-primary" onclick="changeOwnPassword()">Update Password</button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <!-- MODAL CONTAINER -->
+  <div id="modalBackdrop" class="modal-backdrop hidden" onclick="if(event.target===this) closeModal()">
+    <div class="modal-card" id="modalContent"></div>
+  </div>
+
+  <input type="file" id="appCamInput" accept="image/*" capture="environment" class="hidden">
+  <input type="file" id="appFileInput" accept="image/*,.pdf" multiple class="hidden">
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script>
+    const APP = {
+      user: null,
+      factories: [],
+      departments: [],
+      users: [],
+      directory: [],
+      visitors: [],
+      gatePasses: [],
+      notifications: [],
+      soundConfig: {},
+      userNotifPrefs: {},
+      settings: {},
+      currentView: 'dashboard',
+      vTab: 'all',
+      mTab: 'all',
+      revisions: {},
+      modalPhotos: { a: [], b: [] },
+      photoCallbackBucket: '',
+      sse: null,
+      audioCtx: null,
+    };
+
+    const BUILTIN_TONES = [
+      { id: 'chime', name: 'Soft Gate Chime (Default)' },
+      { id: 'double-ding', name: 'Double Ding Reception' },
+      { id: 'gentle', name: 'Gentle Bell' },
+      { id: 'urgent', name: 'Urgent Security Siren' },
+    ];
+
+    const MODULES_LIST = [
+      ['dashboard', 'Overview Dashboard'],
+      ['visitors', 'Visitor Pass'],
+      ['gatepasses', 'Material Gate Pass'],
+      ['notifications', 'Notifications'],
+      ['users', 'Users Management'],
+      ['departments', 'Departments'],
+      ['factories', 'Factories'],
+      ['backups', 'Backups'],
+      ['settings', 'Settings'],
+    ];
+
+    function esc(v) {
+      return String(v ?? '').replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]));
+    }
+
+    function showToast(msg, isErr) {
+      const el = document.getElementById('toast');
+      el.textContent = msg;
+      el.style.background = isErr ? '#991b1b' : '#0f2920';
+      el.style.display = 'block';
+      clearTimeout(el._t);
+      el._t = setTimeout(() => { el.style.display = 'none'; }, 3800);
+    }
+
+    async function api(url, opts = {}) {
+      const headers = Object.assign({ 'X-Requested-With': 'ShreeGatePass' }, opts.headers || {});
+      if (opts.body && !(opts.body instanceof FormData) && !headers['Content-Type']) {
+        headers['Content-Type'] = 'application/json';
+      }
+      const res = await fetch(url, Object.assign({}, opts, { headers, credentials: 'same-origin' }));
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      return data;
+    }
+
+    function hasPerm(mod, lvl = 'ro') {
+      if (!APP.user) return false;
+      if (APP.user.role === 'Administrator') return true;
+      const p = (APP.user.perms || {})[mod] || 'none';
+      if (lvl === 'rw') return p === 'rw';
+      return p === 'ro' || p === 'rw';
+    }
+
+    /* ---------------- AUTH ---------------- */
+    async function doLogin(e) {
+      e.preventDefault();
+      const err = document.getElementById('loginErr');
+      const btn = document.getElementById('loginBtn');
+      err.textContent = '';
+      btn.disabled = true;
+      btn.textContent = 'Signing in…';
+      try {
+        await api('/api/login', {
+          method: 'POST',
+          body: JSON.stringify({
+            username: document.getElementById('loginUser').value.trim(),
+            password: document.getElementById('loginPass').value,
+          }),
+        });
+        await bootSession();
+      } catch (ex) {
+        err.textContent = ex.message;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Sign In →';
+      }
+    }
+
+    async function doLogout() {
+      try { await api('/api/logout', { method: 'POST', body: '{}' }); } catch (_) {}
+      if (APP.sse) { APP.sse.close(); APP.sse = null; }
+      location.reload();
+    }
+
+    function openRecoveryModal() {
+      openModal(`
+        <div class="modal-hd"><h2>Reset Administrator Password</h2><button class="btn" onclick="closeModal()">✕</button></div>
+        <form onsubmit="submitRecovery(event)" class="form-2">
+          <div class="f-group full"><label>Admin Username</label><input id="recUser" required></div>
+          <div class="f-group full"><label>Favourite animal</label><input id="recA1" required></div>
+          <div class="f-group full"><label>Favourite colour</label><input id="recA2" required></div>
+          <div class="f-group full"><label>Favourite food</label><input id="recA3" required></div>
+          <div class="f-group full"><label>New Password (min 8 chars)</label><input type="password" id="recPw" required minlength="8"></div>
+          <div class="f-group full"><button type="submit" class="btn btn-primary btn-full">Reset Password</button></div>
+        </form>
+      `);
+    }
+
+    async function submitRecovery(e) {
+      e.preventDefault();
+      try {
+        await api('/api/recovery/reset', {
+          method: 'POST',
+          body: JSON.stringify({
+            username: document.getElementById('recUser').value.trim(),
+            answers: [document.getElementById('recA1').value, document.getElementById('recA2').value, document.getElementById('recA3').value],
+            new_password: document.getElementById('recPw').value,
+          }),
+        });
+        closeModal();
+        showToast('Password updated! You can sign in now.');
+      } catch (err) { showToast(err.message, true); }
+    }
+
+    /* ---------------- MOBILE APK / iOS INSTALL MODAL ---------------- */
+    async function openMobileInstallModal() {
+      let st = { apkAvailable: false, apkUrl: '/download/shree-gatepass.apk', iosMobileconfigUrl: '/download/shree-gatepass-ios.mobileconfig', iosZipUrl: '/download/shree-gatepass-ios.zip' };
+      try { st = await fetch('/api/public/apk-status').then(r => r.json()); } catch (_) {}
+      const mb = st.apkSizeBytes ? ` (${(st.apkSizeBytes / 1048576).toFixed(1)} MB)` : '';
+      openModal(`
+        <div class="modal-hd"><h2>📱 Install Shree GatePass Mobile App</h2><button class="btn" onclick="closeModal()">✕</button></div>
+        <div style="display:flex;flex-direction:column;gap:12px">
+          <div style="padding:14px;border:1px solid #b6dec9;border-radius:12px;background:#f2faf6">
+            <h3 style="margin:0 0 6px;font-size:15px">🤖 Android App (.apk)</h3>
+            <p style="margin:0 0 10px;font-size:12.5px;color:var(--muted)">Includes background targeted notification service, native camera capture &amp; SSL certificate auto-trust (<code>com.shree.gatepass</code>).</p>
+            ${st.apkAvailable
+              ? `<a class="btn btn-primary" href="${esc(st.apkUrl)}" download="Shree-GatePass.apk">⬇ Download Android APK${mb}</a>`
+              : `<span style="font-size:12px;color:#b45309;font-weight:700">APK file will be downloadable as soon as placed on server.</span>`}
+          </div>
+
+          <div style="padding:14px;border:1px solid #bfdbfe;border-radius:12px;background:#f3f8ff">
+            <h3 style="margin:0 0 6px;font-size:15px">🍎 iPhone &amp; iPad · Direct 1-Tap Profile</h3>
+            <p style="margin:0 0 10px;font-size:12.5px;color:var(--muted)">Tap in <b>Safari</b> on iPhone/iPad → Allow → Open <b>Settings → Profile Downloaded → Install</b>. Installs full-screen <b>Shree GatePass</b> icon + trusts local SSL certificate (no Mac needed).</p>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <a class="btn btn-blue" href="${esc(st.iosMobileconfigUrl)}">📲 Install on iPhone / iPad (.mobileconfig)</a>
+              <a class="btn" href="/ca.crt" download="Shree-GatePass-CA.crt">🔐 Server CA Cert</a>
+              ${st.iosZipAvailable ? `<a class="btn" href="${esc(st.iosZipUrl)}" download="Shree-GatePass-iOS-Xcode.zip">🛠 Xcode Project (.zip)</a>` : ''}
+            </div>
+          </div>
+        </div>
+      `);
+    }
+
+    /* ---------------- BOOT & DATA LOADING ---------------- */
+    async function bootSession() {
+      const data = await api('/api/data');
+      APP.user = data.user;
+      APP.factories = data.factories || [];
+      APP.departments = data.departments || [];
+      APP.users = data.users || [];
+      APP.directory = data.directory || [];
+      APP.settings = data.settings || {};
+      APP.soundConfig = data.soundConfig || {};
+      APP.userNotifPrefs = data.userNotifPrefs || {};
+      APP.revisions = data.revisions || {};
+
+      document.getElementById('loginOverlay').classList.add('hidden');
+      document.getElementById('appShell').classList.remove('hidden');
+
+      document.getElementById('sbCompany').textContent = APP.settings.company || 'Shree GatePass';
+      document.getElementById('userChip').textContent = `${APP.user.full_name} (${APP.user.dept || APP.user.role})`;
+
+      // Permission visibility
+      document.querySelectorAll('.nav-item[data-view]').forEach(btn => {
+        const mod = btn.dataset.view;
+        btn.classList.toggle('hidden', !hasPerm(mod, 'ro'));
+      });
+      const facSel = document.getElementById('globalFactoryFilter');
+      facSel.innerHTML = '<option value="">All Factories</option>' + APP.factories.map(f => `<option value="${esc(f.code)}">${esc(f.name || f.code)}</option>`).join('');
+      if (APP.user.factory) facSel.value = APP.user.factory;
+
+      await Promise.all([loadVisitors(), loadGatePasses(), loadNotifs()]);
+      renderCurrentView();
+      startLiveSync();
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('/sw.js').catch(() => {});
+      }
+    }
+
+    async function loadVisitors() {
+      if (!hasPerm('visitors', 'ro')) { APP.visitors = []; return; }
+      const res = await api('/api/visitors');
+      APP.visitors = res.visitors || [];
+    }
+
+    async function loadGatePasses() {
+      if (!hasPerm('gatepasses', 'ro')) { APP.gatePasses = []; return; }
+      const res = await api('/api/gate-passes');
+      APP.gatePasses = res.gatePasses || [];
+    }
+
+    async function loadNotifs() {
+      const res = await api('/api/notifications/history');
+      APP.notifications = res.notifications || [];
+      updateBadges();
+    }
+
+    function updateBadges() {
+      const pendingV = APP.visitors.filter(v => v.status === 'Pending').length;
+      const overdueM = APP.gatePasses.filter(g => g.overdue || (g.isReturnable && !g.returnedAt)).length;
+      const unreadN = APP.notifications.filter(n => !n.read).length;
+
+      const sbV = document.getElementById('sbBadgePending');
+      sbV.textContent = pendingV; sbV.classList.toggle('hidden', !pendingV);
+
+      const sbM = document.getElementById('sbBadgeOverdue');
+      sbM.textContent = overdueM; sbM.classList.toggle('hidden', !overdueM);
+
+      const sbN = document.getElementById('sbBadgeNotif');
+      sbN.textContent = unreadN; sbN.classList.toggle('hidden', !unreadN);
+
+      const topDot = document.getElementById('topBellDot');
+      topDot.textContent = unreadN; topDot.classList.toggle('hidden', !unreadN);
+    }
+
+    function switchView(view) {
+      APP.currentView = view;
+      document.querySelectorAll('.view-pane').forEach(p => p.classList.add('hidden'));
+      const pane = document.getElementById('view-' + view);
+      if (pane) pane.classList.remove('hidden');
+      document.querySelectorAll('.nav-item[data-view]').forEach(b => b.classList.toggle('active', b.dataset.view === view));
+      const titles = {
+        dashboard: 'Overview', visitors: 'Visitor Pass', gatepasses: 'Material Gate Pass',
+        notifications: 'Notifications & Alert Sounds', users: 'Users & Bulk Import',
+        departments: 'Departments', factories: 'Factories', backups: 'Backups', settings: 'Settings'
+      };
+      document.getElementById('topbarViewTitle').textContent = titles[view] || view;
+      document.getElementById('sidebar').classList.remove('open');
+      renderCurrentView();
+    }
+
+    function toggleSidebar() { document.getElementById('sidebar').classList.toggle('open'); }
+
+    function renderCurrentView() {
+      updateBadges();
+      if (APP.currentView === 'dashboard') renderDashboard();
+      else if (APP.currentView === 'visitors') renderVisitors();
+      else if (APP.currentView === 'gatepasses') renderGatePasses();
+      else if (APP.currentView === 'notifications') renderNotifications();
+      else if (APP.currentView === 'users') renderUsers();
+      else if (APP.currentView === 'departments') renderDepartments();
+      else if (APP.currentView === 'factories') renderFactories();
+      else if (APP.currentView === 'backups') loadBackupsView();
+      else if (APP.currentView === 'settings') renderSettings();
+    }
+
+    /* ---------------- DASHBOARD OVERVIEW ---------------- */
+    function renderDashboard() {
+      const fac = document.getElementById('globalFactoryFilter').value;
+      const vs = APP.visitors.filter(v => !fac || !v.factory || v.factory === fac);
+      const gs = APP.gatePasses.filter(g => !fac || !g.factory || g.factory === fac);
+
+      const pending = vs.filter(v => v.status === 'Pending');
+      const approved = vs.filter(v => v.status === 'Approved');
+      const inside = vs.filter(v => v.status === 'Checked In');
+      const retPending = gs.filter(g => g.isReturnable && !g.returnedAt);
+      const overdue = gs.filter(g => g.overdue);
+
+      document.getElementById('dashKpis').innerHTML = `
+        <div class="kpi" style="border-left-color:#d97706"><div class="kpi-lbl">Waiting Approval</div><div class="kpi-val">${pending.length}</div></div>
+        <div class="kpi" style="border-left-color:#157a54"><div class="kpi-lbl">Approved (At Gate)</div><div class="kpi-val">${approved.length}</div></div>
+        <div class="kpi" style="border-left-color:#1d5fb8"><div class="kpi-lbl">Checked In (Inside)</div><div class="kpi-val">${inside.length}</div></div>
+        <div class="kpi" style="border-left-color:#0f766e"><div class="kpi-lbl">Material Passes</div><div class="kpi-val">${gs.length}</div></div>
+        <div class="kpi" style="border-left-color:${overdue.length ? '#dc2626' : '#0d9488'}"><div class="kpi-lbl">Returnable / Overdue</div><div class="kpi-val">${retPending.length} <span style="font-size:14px;color:#dc2626">(${overdue.length} overdue)</span></div></div>
+      `;
+
+      const vQ = [...pending, ...approved, ...inside].slice(0, 8);
+      document.getElementById('dashVisitorQueue').innerHTML = vQ.length ? vQ.map(v => `
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid var(--border)">
+          <div>
+            <b>${esc(v.visitorName)}</b> <span style="color:var(--muted);font-size:12px">(${esc(v.company || v.phone)})</span><br>
+            <span style="font-size:12px;color:var(--muted)">Meet: <b>${esc(v.hostName || v.department)}</b> · ${statusBadge(v.status)}</span>
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">${visitorActionsHtml(v)}</div>
+        </div>
+      `).join('') : '<p style="color:var(--muted)">No pending or active visitors right now.</p>';
+
+      document.getElementById('dashMaterialQueue').innerHTML = retPending.length ? retPending.slice(0, 8).map(g => `
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid var(--border)">
+          <div>
+            <b>${esc(g.materialName)}</b> (${esc(g.direction)})<br>
+            <span style="font-size:12px;color:var(--muted)">Qty ${esc(g.quantity)} ${esc(g.unit)} · ${esc(g.forName || g.department || 'Plant')} · ${g.overdue ? '<b style="color:#dc2626">OVERDUE</b>' : 'Due ' + new Date(g.expectedReturnAt).toLocaleDateString()}</span>
+          </div>
+          <button class="btn btn-soft" onclick="markMaterialReturned('${esc(g.id)}')">✓ Returned</button>
+        </div>
+      `).join('') : '<p style="color:var(--muted)">No pending returnable materials.</p>';
+    }
+
+    /* ---------------- VISITOR 4-STEP LIFECYCLE ---------------- */
+    function statusBadge(s) {
+      if (s === 'Approved') return '<span class="badge b-approved">✓ Approved (Allow In)</span>';
+      if (s === 'Checked In') return '<span class="badge b-checkedin">📍 Checked In</span>';
+      if (s === 'Checked Out') return '<span class="badge b-checkedout">🚪 Checked Out</span>';
+      if (s === 'Rejected') return '<span class="badge b-rejected">✕ Rejected</span>';
+      if (s === 'Overdue') return '<span class="badge b-overdue">⚠ Overdue</span>';
+      return `<span class="badge b-pending">⏳ ${esc(s)}</span>`;
+    }
+
+    function visitorActionsHtml(v) {
+      if (v.status === 'Pending') {
+        return `<button class="btn btn-primary" onclick="decideVisitor('${esc(v.id)}','Approved')">✓ Approve</button>
+                <button class="btn btn-danger" onclick="decideVisitor('${esc(v.id)}','Rejected')">✕ Reject</button>`;
+      }
+      if (v.status === 'Approved') {
+        return `<button class="btn btn-blue" onclick="checkinVisitor('${esc(v.id)}')">📍 Check In</button>
+                <button class="btn" onclick="checkoutVisitor('${esc(v.id)}')">🚪 Check Out</button>`;
+      }
+      if (v.status === 'Checked In') {
+        return `<button class="btn btn-amber" onclick="checkoutVisitor('${esc(v.id)}')">🚪 Check Out</button>`;
+      }
+      return '<span style="font-size:12px;color:var(--muted)">Completed</span>';
+    }
+
+    function setVTab(tab, btn) {
+      APP.vTab = tab;
+      document.querySelectorAll('#vStatusTabs .pill-tab').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      renderVisitors();
+    }
+
+    function renderVisitors() {
+      const fac = document.getElementById('globalFactoryFilter').value;
+      const q = (document.getElementById('vSearch').value || '').trim().toLowerCase();
+      const rows = APP.visitors.filter(v => {
+        if (fac && v.factory && v.factory !== fac) return false;
+        if (APP.vTab !== 'all' && v.status !== APP.vTab) return false;
+        if (q) {
+          const hay = `${v.id} ${v.visitorName} ${v.phone} ${v.company} ${v.hostName} ${v.department}`.toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        return true;
+      });
+      document.getElementById('vTableBody').innerHTML = rows.length ? rows.map(v => {
+        const thumbs = [...(v.selfiePhotos || []), ...(v.idCardPhotos || [])];
+        return `
+          <tr>
+            <td><b>${esc(v.id)}</b><br><span style="font-size:11.5px;color:var(--muted)">${new Date(v.entryTime).toLocaleString([], {day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</span></td>
+            <td><b>${esc(v.visitorName)}</b><br><span style="font-size:12px;color:var(--muted)">${esc(v.company || '-')} · ${esc(v.phone || '-')}</span><br><span style="font-size:11.5px;color:var(--muted)">Purpose: ${esc(v.purpose || '-')}</span></td>
+            <td><b>${esc(v.hostName || 'Whole Dept')}</b><br><span style="font-size:12px;color:var(--muted)">${esc(v.department || '-')} · ${esc(v.factory || '-')}</span></td>
+            <td>${thumbs.length ? `<div class="thumb-row">${thumbs.map(u => `<img class="thumb-mini" src="${esc(u)}" onclick="openPhotoPreview('${esc(u)}')">`).join('')}</div>` : '<span style="color:var(--muted);font-size:12px">—</span>'}</td>
+            <td>
+              ${statusBadge(v.status)}
+              <div style="font-size:11px;color:var(--muted);margin-top:4px;line-height:1.4">
+                ${v.approvedBy ? `Approved: ${esc(v.approvedBy)}<br>` : ''}
+                ${v.checkedInAt ? `In: ${new Date(v.checkedInAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})} (${esc(v.checkedInBy)})<br>` : ''}
+                ${v.checkedOutAt ? `Out: ${new Date(v.checkedOutAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})} (${esc(v.checkedOutBy)})` : ''}
+              </div>
+            </td>
+            <td><div style="display:flex;gap:6px;flex-wrap:wrap">${visitorActionsHtml(v)}</div></td>
+          </tr>
+        `;
+      }).join('') : '<tr><td colspan="6" style="color:var(--muted)">No matching visitor passes found.</td></tr>';
+    }
+
+    async function decideVisitor(vid, decision) {
+      let reason = '';
+      if (decision === 'Rejected') {
+        reason = prompt('Reason for rejection (optional):') || '';
+      }
+      try {
+        await api(`/api/visitors/${encodeURIComponent(vid)}/decision`, { method: 'POST', body: JSON.stringify({ decision, reason }) });
+        showToast(`Visitor ${decision}`);
+        await Promise.all([loadVisitors(), loadNotifs()]);
+        renderCurrentView();
+      } catch (err) { showToast(err.message, true); }
+    }
+
+    async function checkinVisitor(vid) {
+      try {
+        await api(`/api/visitors/${encodeURIComponent(vid)}/checkin`, { method: 'POST', body: '{}' });
+        showToast('Visitor Checked In (Meeting active)');
+        await Promise.all([loadVisitors(), loadNotifs()]);
+        renderCurrentView();
+      } catch (err) { showToast(err.message, true); }
+    }
+
+    async function checkoutVisitor(vid) {
+      try {
+        await api(`/api/visitors/${encodeURIComponent(vid)}/checkout`, { method: 'POST', body: '{}' });
+        showToast('Visitor Checked Out');
+        await Promise.all([loadVisitors(), loadNotifs()]);
+        renderCurrentView();
+      } catch (err) { showToast(err.message, true); }
+    }
+
+    function openNewVisitorModal() {
+      APP.modalPhotos = { a: [], b: [] };
+      openModal(`
+        <div class="modal-hd"><h2>🪪 New Visitor Pass</h2><button class="btn" onclick="closeModal()">✕</button></div>
+        <form onsubmit="submitModalVisitor(event)" class="form-2">
+          <div class="f-group"><label>Factory *</label><select id="mvFac" onchange="refreshModalHosts('mv')">${factoryOptsHtml()}</select></div>
+          <div class="f-group"><label>Department *</label><select id="mvDept" onchange="refreshModalHosts('mv')">${deptOptsHtml()}</select></div>
+          <div class="f-group full"><label>Whom to Meet (Specific User — blank notifies entire Dept)</label><select id="mvHost"></select></div>
+          <div class="f-group"><label>Visitor Full Name *</label><input id="mvName" required></div>
+          <div class="f-group"><label>Mobile *</label><input id="mvPhone" required></div>
+          <div class="f-group"><label>Company</label><input id="mvCompany"></div>
+          <div class="f-group"><label>Purpose *</label><input id="mvPurpose" required></div>
+          <div class="f-group"><label>Vehicle No</label><input id="mvVeh"></div>
+          <div class="f-group"><label>Notes</label><input id="mvNotes"></div>
+          <div class="f-group">
+            <label>Visitor Selfie Photos</label>
+            <div style="display:flex;gap:6px"><button type="button" class="btn" onclick="modalCapture('a', true)">📷 Cam</button><button type="button" class="btn" onclick="modalCapture('a', false)">📁 File</button></div>
+            <div class="thumb-row" id="modalThumbs-a"></div>
+          </div>
+          <div class="f-group">
+            <label>ID Card Photos</label>
+            <div style="display:flex;gap:6px"><button type="button" class="btn" onclick="modalCapture('b', true)">📷 Cam</button><button type="button" class="btn" onclick="modalCapture('b', false)">📁 File</button></div>
+            <div class="thumb-row" id="modalThumbs-b"></div>
+          </div>
+          <div class="f-group full"><button type="submit" class="btn btn-primary btn-full">Create Visitor Pass →</button></div>
+        </form>
+      `);
+      refreshModalHosts('mv');
+    }
+
+    async function submitModalVisitor(e) {
+      e.preventDefault();
+      const hSel = document.getElementById('mvHost');
+      const hOpt = hSel.options[hSel.selectedIndex];
+      try {
+        await api('/api/visitors', {
+          method: 'POST',
+          body: JSON.stringify({
+            factory: document.getElementById('mvFac').value,
+            department: document.getElementById('mvDept').value,
+            hostUsername: hSel.value,
+            hostName: hSel.value && hOpt ? hOpt.textContent.split(' (')[0] : '',
+            visitorName: document.getElementById('mvName').value.trim(),
+            phone: document.getElementById('mvPhone').value.trim(),
+            company: document.getElementById('mvCompany').value.trim(),
+            purpose: document.getElementById('mvPurpose').value.trim(),
+            vehicleNo: document.getElementById('mvVeh').value.trim(),
+            notes: document.getElementById('mvNotes').value.trim(),
+            selfiePhotos: APP.modalPhotos.a,
+            idCardPhotos: APP.modalPhotos.b,
+          }),
+        });
+        closeModal();
+        showToast('Visitor pass created & targeted alert sent!');
+        await Promise.all([loadVisitors(), loadNotifs()]);
+        renderCurrentView();
+      } catch (err) { showToast(err.message, true); }
+    }
+
+    /* ---------------- MATERIAL GATE PASS ---------------- */
+    function setMTab(tab, btn) {
+      APP.mTab = tab;
+      document.querySelectorAll('#mStatusTabs .pill-tab').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      renderGatePasses();
+    }
+
+    function renderGatePasses() {
+      const fac = document.getElementById('globalFactoryFilter').value;
+      const q = (document.getElementById('mSearch').value || '').trim().toLowerCase();
+      const rows = APP.gatePasses.filter(g => {
+        if (fac && g.factory && g.factory !== fac) return false;
+        if (APP.mTab === 'IN' && g.direction !== 'IN') return false;
+        if (APP.mTab === 'OUT' && g.direction !== 'OUT') return false;
+        if (APP.mTab === 'PENDING_RET' && !(g.isReturnable && !g.returnedAt)) return false;
+        if (APP.mTab === 'OVERDUE' && !g.overdue) return false;
+        if (APP.mTab === 'RETURNED' && !g.returnedAt) return false;
+        if (q) {
+          const hay = `${g.id} ${g.materialName} ${g.partyName} ${g.challanNo} ${g.vehicleNo} ${g.forName} ${g.department}`.toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        return true;
+      });
+      document.getElementById('mTableBody').innerHTML = rows.length ? rows.map(g => {
+        const matImgs = (g.materialPhotos || []).map(u => `<img class="thumb-mini" src="${esc(u)}" onclick="openPhotoPreview('${esc(u)}')">`).join('');
+        const billImgs = (g.billPhotos || []).map(u => `<img class="thumb-mini" src="${esc(u)}" onclick="openPhotoPreview('${esc(u)}')">`).join('');
+        return `
+          <tr>
+            <td><b>${esc(g.id)}</b><br><span class="badge ${g.direction==='IN'?'b-approved':'b-pending'}">${esc(g.direction)}</span></td>
+            <td><b>${esc(g.materialName)}</b><br><span style="font-size:12px;color:var(--muted)">Qty: ${esc(g.quantity)} ${esc(g.unit)}</span></td>
+            <td>${esc(g.partyName || '-')}<br><span style="font-size:12px;color:var(--muted)">Challan: ${esc(g.challanNo || '-')} · Veh: ${esc(g.vehicleNo || '-')}</span></td>
+            <td><b>${esc(g.forName || 'Whole Dept')}</b><br><span style="font-size:12px;color:var(--muted)">${esc(g.department || '-')} · ${esc(g.factory || '-')}</span></td>
+            <td><div class="thumb-row">${matImgs}${billImgs}</div></td>
+            <td>
+              ${g.isReturnable
+                ? (g.returnedAt ? `<span class="badge b-approved">✓ Returned</span>` : (g.overdue ? `<span class="badge b-overdue">⚠ OVERDUE (${g.expectedDays}d)</span>` : `<span class="badge b-pending">⏳ Due ${new Date(g.expectedReturnAt).toLocaleDateString()}</span>`))
+                : '<span style="font-size:12px;color:var(--muted)">Non-Returnable</span>'}
+            </td>
+            <td>
+              ${g.isReturnable && !g.returnedAt ? `<button class="btn btn-primary" onclick="markMaterialReturned('${esc(g.id)}')">✓ Mark Returned</button>` : '<span style="font-size:12px;color:var(--muted)">Closed</span>'}
+            </td>
+          </tr>
+        `;
+      }).join('') : '<tr><td colspan="7" style="color:var(--muted)">No matching material gate passes found.</td></tr>';
+    }
+
+    async function markMaterialReturned(gid) {
+      const note = prompt('Return note (optional):', 'Material received back at gate');
+      if (note === null) return;
+      try {
+        await api(`/api/gate-passes/${encodeURIComponent(gid)}/return`, { method: 'POST', body: JSON.stringify({ note }) });
+        showToast('Material marked returned!');
+        await Promise.all([loadGatePasses(), loadNotifs()]);
+        renderCurrentView();
+      } catch (err) { showToast(err.message, true); }
+    }
+
+    function openNewMaterialModal() {
+      APP.modalPhotos = { a: [], b: [] };
+      const defDays = APP.settings.default_returnable_days || 7;
+      openModal(`
+        <div class="modal-hd"><h2>📦 New Material Gate Pass</h2><button class="btn" onclick="closeModal()">✕</button></div>
+        <form onsubmit="submitModalMaterial(event)" class="form-2">
+          <div class="f-group"><label>Direction *</label><select id="mmDir"><option value="IN">IN (Factory Arrival)</option><option value="OUT">OUT (Factory Dispatch)</option></select></div>
+          <div class="f-group"><label>Factory *</label><select id="mmFac" onchange="refreshModalHosts('mm')">${factoryOptsHtml()}</select></div>
+          <div class="f-group"><label>Department *</label><select id="mmDept" onchange="refreshModalHosts('mm')">${deptOptsHtml()}</select></div>
+          <div class="f-group"><label>Recipient User (Optional)</label><select id="mmHost"></select></div>
+          <div class="f-group"><label>Material Name / Description *</label><input id="mmName" required></div>
+          <div class="f-group"><label>Party / Vendor Name</label><input id="mmParty"></div>
+          <div class="f-group"><label>Challan / Bill No</label><input id="mmChallan"></div>
+          <div class="f-group"><label>Quantity &amp; Unit</label><div style="display:flex;gap:6px"><input id="mmQty" value="1" style="flex:1"><select id="mmUnit" style="width:90px"><option>Nos</option><option>Kg</option><option>Box</option><option>Set</option><option>Mtr</option><option>Ltr</option></select></div></div>
+          <div class="f-group"><label>Vehicle No</label><input id="mmVeh"></div>
+          <div class="f-group"><label>Driver Name</label><input id="mmDriver"></div>
+          <div class="f-group full">
+            <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="mmRet" style="width:16px;height:16px"> Returnable Material (auto reminder after days):</label>
+            <input type="number" id="mmDays" min="1" max="365" value="${defDays}" style="max-width:140px;margin-top:4px">
+          </div>
+          <div class="f-group">
+            <label>Material Photos</label>
+            <div style="display:flex;gap:6px"><button type="button" class="btn" onclick="modalCapture('a', true)">📷 Cam</button><button type="button" class="btn" onclick="modalCapture('a', false)">📁 File</button></div>
+            <div class="thumb-row" id="modalThumbs-a"></div>
+          </div>
+          <div class="f-group">
+            <label>Bill / Challan Photos</label>
+            <div style="display:flex;gap:6px"><button type="button" class="btn" onclick="modalCapture('b', true)">📷 Cam</button><button type="button" class="btn" onclick="modalCapture('b', false)">📁 File</button></div>
+            <div class="thumb-row" id="modalThumbs-b"></div>
+          </div>
+          <div class="f-group full"><button type="submit" class="btn btn-primary btn-full">Save Material Gate Pass →</button></div>
+        </form>
+      `);
+      refreshModalHosts('mm');
+    }
+
+    async function submitModalMaterial(e) {
+      e.preventDefault();
+      const hSel = document.getElementById('mmHost');
+      const hOpt = hSel.options[hSel.selectedIndex];
+      const isRet = document.getElementById('mmRet').checked;
+      try {
+        await api('/api/gate-passes', {
+          method: 'POST',
+          body: JSON.stringify({
+            direction: document.getElementById('mmDir').value,
+            factory: document.getElementById('mmFac').value,
+            department: document.getElementById('mmDept').value,
+            forUsername: hSel.value,
+            forName: hSel.value && hOpt ? hOpt.textContent.split(' (')[0] : '',
+            materialName: document.getElementById('mmName').value.trim(),
+            partyName: document.getElementById('mmParty').value.trim(),
+            challanNo: document.getElementById('mmChallan').value.trim(),
+            quantity: document.getElementById('mmQty').value.trim() || '1',
+            unit: document.getElementById('mmUnit').value,
+            vehicleNo: document.getElementById('mmVeh').value.trim(),
+            driverName: document.getElementById('mmDriver').value.trim(),
+            isReturnable: isRet,
+            expectedDays: isRet ? (parseInt(document.getElementById('mmDays').value || '7', 10) || 7) : 0,
+            materialPhotos: APP.modalPhotos.a,
+            billPhotos: APP.modalPhotos.b,
+          }),
+        });
+        closeModal();
+        showToast('Material gate pass saved!');
+        await Promise.all([loadGatePasses(), loadNotifs()]);
+        renderCurrentView();
+      } catch (err) { showToast(err.message, true); }
+    }
+
+    /* ---------------- NOTIFICATIONS & SOUND ENGINE ---------------- */
+    function effectiveSoundPrefs() {
+      return Object.assign({}, APP.soundConfig || {}, APP.userNotifPrefs || {});
+    }
+
+    function switchNotifTab(tab) {
+      const isInbox = tab === 'inbox';
+      document.getElementById('tabNInbox').classList.toggle('active', isInbox);
+      document.getElementById('tabNSounds').classList.toggle('active', !isInbox);
+      document.getElementById('notifInboxPane').classList.toggle('hidden', !isInbox);
+      document.getElementById('notifSoundsPane').classList.toggle('hidden', isInbox);
+      renderNotifications();
+    }
+
+    function renderNotifications() {
+      const unread = APP.notifications.filter(n => !n.read).length;
+      document.getElementById('notifCountText').textContent = `${unread} unread of ${APP.notifications.length} targeted alerts`;
+      document.getElementById('notifInboxList').innerHTML = APP.notifications.length ? APP.notifications.map(n => `
+        <div style="padding:12px;border:1px solid var(--border);border-radius:12px;margin-bottom:8px;background:${n.read ? '#fff' : '#f2faf6'};display:flex;justify-content:space-between;gap:10px;align-items:flex-start">
+          <div>
+            <div style="font-weight:800;font-size:13.5px">${n.read ? '' : '🟢 '}${esc(n.title)}</div>
+            <div style="font-size:12.5px;color:var(--muted);margin-top:3px">${esc(n.body)}</div>
+            <div style="font-size:11px;color:var(--muted);margin-top:4px">${new Date(n.ts).toLocaleString()} · Event: <code>${esc(n.kind)}</code></div>
+          </div>
+          <div style="display:flex;gap:6px;flex-shrink:0">
+            <button class="btn" onclick="switchView('${esc(n.targetView || 'visitors')}')">Open →</button>
+            ${!n.read ? `<button class="btn btn-soft" onclick="markOneNotifRead('${esc(n.id)}')">✓ Read</button>` : ''}
+          </div>
+        </div>
+      `).join('') : '<p style="color:var(--muted)">No notifications targeted to you yet.</p>';
+
+      const cfg = effectiveSoundPrefs();
+      document.getElementById('sndMasterEnabled').checked = cfg.enabled !== false;
+      document.getElementById('sndDesktopEnabled').checked = cfg.desktop_notifications !== false;
+      document.getElementById('sndVolume').value = cfg.volume ?? 0.9;
+      document.getElementById('qhEnabled').checked = Boolean(cfg.quiet_hours?.enabled);
+      document.getElementById('qhStart').value = cfg.quiet_hours?.start || '22:00';
+      document.getElementById('qhEnd').value = cfg.quiet_hours?.end || '07:00';
+      document.getElementById('soundAdminSaveWrap').classList.toggle('hidden', APP.user?.role !== 'Administrator');
+
+      const tones = [...BUILTIN_TONES, ...(APP.soundConfig?.custom_ringtones || []).map(t => ({ id: t.url, name: '🎵 ' + t.name }))];
+      const cats = [
+        ['visitor_entry', 'Visitor Entry (Gate Waiting Approval)'],
+        ['visitor_status', 'Visitor Approved / Check-In / Check-Out'],
+        ['material_entry', 'Material Gate Pass Entry / Returned'],
+        ['material_overdue', 'Returnable Material Overdue Alert'],
+      ];
+      document.getElementById('soundMatrixBody').innerHTML = cats.map(([k, label]) => {
+        const c = cfg[k] || { enabled: true, silent: false, sound: 'chime' };
+        return `
+          <tr>
+            <td><input type="checkbox" ${c.enabled !== false ? 'checked' : ''} onchange="updateSoundCat('${k}','enabled',this.checked)"></td>
+            <td><b>${esc(label)}</b></td>
+            <td>
+              <select class="input" onchange="updateSoundCat('${k}','sound',this.value)">
+                ${tones.map(t => `<option value="${esc(t.id)}" ${c.sound === t.id ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}
+              </select>
+            </td>
+            <td><button type="button" class="btn" onclick="playToneById('${esc(c.sound || 'chime')}', true)">▶ Play</button></td>
+            <td>
+              <button type="button" class="btn ${c.silent ? 'btn-danger' : 'btn-soft'}" onclick="updateSoundCat('${k}','silent',${!c.silent})">
+                ${c.silent ? '🔇 Silent' : '🔔 Active'}
+              </button>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    async function markOneNotifRead(id) {
+      await api('/api/notifications/history', { method: 'POST', body: JSON.stringify({ id }) });
+      await loadNotifs();
+      renderNotifications();
+    }
+
+    async function markAllNotifsRead() {
+      await api('/api/notifications/history', { method: 'POST', body: JSON.stringify({ action: 'read_all' }) });
+      await loadNotifs();
+      renderNotifications();
+    }
+
+    function updateSoundCat(key, prop, val) {
+      const base = effectiveSoundPrefs();
+      const cat = Object.assign({ enabled: true, silent: false, sound: 'chime' }, base[key] || {});
+      cat[prop] = val;
+      APP.userNotifPrefs[key] = cat;
+      saveSoundConfig(false);
+      renderNotifications();
+    }
+
+    async function requestDesktopAndSave() {
+      const checked = document.getElementById('sndDesktopEnabled').checked;
+      if (checked && 'Notification' in window && Notification.permission === 'default') {
+        try { await Notification.requestPermission(); } catch (_) {}
+      }
+      await saveSoundConfig(false);
+    }
+
+    async function saveSoundConfig(applyGlobal = false) {
+      const payload = {
+        applyGlobal: Boolean(applyGlobal),
+        scope: applyGlobal ? 'global' : 'user',
+        enabled: document.getElementById('sndMasterEnabled').checked,
+        desktop_notifications: document.getElementById('sndDesktopEnabled').checked,
+        volume: parseFloat(document.getElementById('sndVolume').value || '0.9'),
+        visitor_entry: APP.userNotifPrefs.visitor_entry || effectiveSoundPrefs().visitor_entry,
+        visitor_status: APP.userNotifPrefs.visitor_status || effectiveSoundPrefs().visitor_status,
+        material_entry: APP.userNotifPrefs.material_entry || effectiveSoundPrefs().material_entry,
+        material_overdue: APP.userNotifPrefs.material_overdue || effectiveSoundPrefs().material_overdue,
+        quiet_hours: {
+          enabled: document.getElementById('qhEnabled').checked,
+          start: document.getElementById('qhStart').value || '22:00',
+          end: document.getElementById('qhEnd').value || '07:00',
+        },
+      };
+      try {
+        const res = await api('/api/notifications/sounds', { method: 'POST', body: JSON.stringify(payload) });
+        if (res.soundConfig) APP.soundConfig = res.soundConfig;
+        if (res.userPrefs) APP.userNotifPrefs = res.userPrefs;
+        showToast(applyGlobal ? 'Organization notification defaults saved!' : 'My notification sound preferences saved!');
+      } catch (err) { showToast(err.message, true); }
+    }
+
+    async function uploadCustomRingtone() {
+      const inp = document.getElementById('ringtoneFileInput');
+      if (!inp.files?.length) { showToast('Choose an audio file first', true); return; }
+      const fd = new FormData();
+      fd.append('file', inp.files[0]);
+      try {
+        const res = await api('/api/notifications/ringtones', { method: 'POST', body: fd });
+        APP.soundConfig.custom_ringtones = res.custom_ringtones || [];
+        inp.value = '';
+        showToast('Ringtone uploaded!');
+        renderNotifications();
+      } catch (err) { showToast(err.message, true); }
+    }
+
+    function inQuietHours(qh) {
+      if (!qh || !qh.enabled || !qh.start || !qh.end) return false;
+      const now = new Date();
+      const cur = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+      return qh.start <= qh.end ? (cur >= qh.start && cur <= qh.end) : (cur >= qh.start || cur <= qh.end);
+    }
+
+    function playToneById(toneId, force = false) {
+      const cfg = effectiveSoundPrefs();
+      if (!force && (cfg.enabled === false || inQuietHours(cfg.quiet_hours))) return;
+      const vol = Math.max(0.05, Math.min(1, Number(cfg.volume ?? 0.9)));
+      if (String(toneId || '').startsWith('/api/')) {
+        const audio = new Audio(toneId);
+        audio.volume = vol;
+        audio.play().catch(() => {});
+        return;
+      }
+      try {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) return;
+        APP.audioCtx = APP.audioCtx || new Ctx();
+        if (APP.audioCtx.state === 'suspended') APP.audioCtx.resume();
+        const now = APP.audioCtx.currentTime;
+        const notes = toneId === 'urgent' ? [880, 660, 880, 660] : toneId === 'double-ding' ? [784, 1046] : toneId === 'gentle' ? [523, 659] : [659, 880, 1175];
+        notes.forEach((freq, idx) => {
+          const osc = APP.audioCtx.createOscillator();
+          const gain = APP.audioCtx.createGain();
+          osc.type = toneId === 'urgent' ? 'sawtooth' : 'sine';
+          osc.frequency.value = freq;
+          gain.gain.setValueAtTime(0.001, now + idx * 0.14);
+          gain.gain.exponentialRampToValueAtTime(vol * 0.25, now + idx * 0.14 + 0.02);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + idx * 0.14 + 0.22);
+          osc.connect(gain);
+          gain.connect(APP.audioCtx.destination);
+          osc.start(now + idx * 0.14);
+          osc.stop(now + idx * 0.14 + 0.25);
+        });
+      } catch (_) {}
+    }
+
+    function handleIncomingAlertEvent(ev) {
+      loadVisitors(); loadGatePasses(); loadNotifs();
+      const cfg = effectiveSoundPrefs();
+      const cat = cfg[ev.kind] || { enabled: true, silent: false, sound: 'chime' };
+      if (cat.enabled !== false) {
+        showToast(`${ev.title}`);
+        if (!cat.silent) playToneById(cat.sound || 'chime', false);
+        if (cfg.desktop_notifications !== false && 'Notification' in window && Notification.permission === 'granted') {
+          try {
+            navigator.serviceWorker?.controller?.postMessage({
+              type: 'SHOW_NOTIFICATION',
+              title: ev.title,
+              options: { body: ev.body, data: { targetView: ev.targetView || 'visitors', targetId: ev.targetId } }
+            }) || new Notification(ev.title, { body: ev.body, icon: '/static/icons/icon-192.png' });
+          } catch (_) {}
+        }
+      }
+    }
+
+    function startLiveSync() {
+      if (APP.sse) APP.sse.close();
+      try {
+        APP.sse = new EventSource('/api/live-stream');
+        APP.sse.addEventListener('alert', e => {
+          try { handleIncomingAlertEvent(JSON.parse(e.data)); } catch (_) {}
+        });
+      } catch (_) {}
+      setInterval(async () => {
+        try {
+          const p = await fetch('/api/live-pulse').then(r => r.json());
+          if (p.visitorRev !== APP.revisions.visitorRev) { APP.revisions.visitorRev = p.visitorRev; await loadVisitors(); if (APP.currentView === 'visitors' || APP.currentView === 'dashboard') renderCurrentView(); }
+          if (p.gatepassRev !== APP.revisions.gatepassRev) { APP.revisions.gatepassRev = p.gatepassRev; await loadGatePasses(); if (APP.currentView === 'gatepasses' || APP.currentView === 'dashboard') renderCurrentView(); }
+          if (p.notifRev !== APP.revisions.notifRev) { APP.revisions.notifRev = p.notifRev; await loadNotifs(); if (APP.currentView === 'notifications') renderNotifications(); }
+        } catch (_) {}
+      }, 8000);
+    }
+
+    /* ---------------- USERS & EXCEL/CSV BULK IMPORT ---------------- */
+    function renderUsers() {
+      const q = (document.getElementById('uSearch').value || '').toLowerCase();
+      const rows = (APP.users || []).filter(u => !q || `${u.username} ${u.full_name} ${u.dept} ${u.role}`.toLowerCase().includes(q));
+      document.getElementById('uTableBody').innerHTML = rows.map(u => `
+        <tr>
+          <td><b>${esc(u.full_name)}</b><br><span style="font-size:12px;color:var(--muted)">@${esc(u.username)}</span></td>
+          <td><b>${esc(u.role)}</b><br><span style="font-size:11.5px;color:var(--muted)">Scope: ${esc(u.gate_scope || 'user')}</span></td>
+          <td>${esc(u.dept || '-')}<br><span style="font-size:12px;color:var(--muted)">${esc(u.factory || 'All Factories')}</span></td>
+          <td>${u.enabled ? '<span class="badge b-approved">Active</span>' : '<span class="badge b-rejected">Disabled</span>'}</td>
+          <td>
+            <div style="display:flex;gap:6px">
+              <button class="btn" onclick="openUserModal('${esc(u.username)}')">Edit</button>
+              ${u.username !== APP.user?.username ? `<button class="btn btn-danger" onclick="deleteUser('${esc(u.username)}')">Delete</button>` : ''}
+            </div>
+          </td>
+        </tr>
+      `).join('');
+    }
+
+    function openUserModal(uname) {
+      const existing = uname ? APP.users.find(u => u.username === uname) : null;
+      const perms = existing?.perms || {};
+      const permRows = MODULES_LIST.map(([m, label]) => `
+        <div class="f-group">
+          <label>${esc(label)}</label>
+          <select id="up_${m}" class="u-perm-sel" data-mod="${m}">
+            <option value="none" ${(perms[m] || (existing?.role==='Administrator'?'rw':'none'))==='none'?'selected':''}>No access</option>
+            <option value="ro" ${(perms[m])==='ro'?'selected':''}>Read only</option>
+            <option value="rw" ${(perms[m] || (!existing && (m==='dashboard'||m==='visitors'||m==='gatepasses'||m==='notifications')?'rw':''))==='rw'?'selected':''}>Read &amp; write</option>
+          </select>
+        </div>
+      `).join('');
+      openModal(`
+        <div class="modal-hd"><h2>${existing ? 'Edit User' : 'Add User'}</h2><button class="btn" onclick="closeModal()">✕</button></div>
+        <form onsubmit="saveUserForm(event, ${existing ? `'${esc(existing.username)}'` : 'null'})" class="form-2">
+          <div class="f-group"><label>Username *</label><input id="uName" value="${esc(existing?.username || '')}" ${existing ? 'readonly' : 'required'}></div>
+          <div class="f-group"><label>Full Name *</label><input id="uFull" value="${esc(existing?.full_name || '')}" required></div>
+          <div class="f-group"><label>Role *</label><select id="uRole">${['Staff','Security Gate','Department Head','Administrator'].map(r => `<option ${existing?.role===r?'selected':''}>${r}</option>`).join('')}</select></div>
+          <div class="f-group"><label>Department</label><select id="uDept"><option value="">None</option>${APP.departments.map(d => `<option ${existing?.dept===d?'selected':''}>${esc(d)}</option>`).join('')}</select></div>
+          <div class="f-group"><label>Factory Restriction</label><select id="uFac"><option value="">All Factories</option>${factoryOptsHtml(existing?.factory)}</select></div>
+          <div class="f-group"><label>Gate Notification Scope</label><select id="uScope"><option value="user" ${existing?.gate_scope==='user'?'selected':''}>Staff (Only Own/Dept Alerts)</option><option value="security" ${existing?.gate_scope==='security'?'selected':''}>Security Gate (Approvals &amp; Overdue Alerts)</option><option value="all" ${existing?.gate_scope==='all'?'selected':''}>All Scope</option></select></div>
+          <div class="f-group"><label>Phone</label><input id="uPhone" value="${esc(existing?.phone || '')}"></div>
+          <div class="f-group"><label>${existing ? 'New Password (leave blank to keep)' : 'Password *'}</label><input type="password" id="uPass" ${existing ? '' : 'required minlength="6"'}></div>
+          <div class="f-group full"><label style="display:flex;align-items:center;gap:7px"><input type="checkbox" id="uEnabled" style="width:16px;height:16px" ${existing?.enabled !== false ? 'checked' : ''}> Account Enabled</label></div>
+          <div class="f-group full"><hr style="width:100%;border:0;border-top:1px solid var(--border)"><b>Module Permissions</b></div>
+          ${permRows}
+          <div class="f-group full"><button type="submit" class="btn btn-primary btn-full">Save User</button></div>
+        </form>
+      `);
+    }
+
+    async function saveUserForm(e, existingUsername) {
+      e.preventDefault();
+      const perms = {};
+      document.querySelectorAll('.u-perm-sel').forEach(sel => { perms[sel.dataset.mod] = sel.value; });
+      try {
+        await api('/api/users', {
+          method: 'POST',
+          body: JSON.stringify({
+            username: existingUsername || document.getElementById('uName').value.trim(),
+            full_name: document.getElementById('uFull').value.trim(),
+            role: document.getElementById('uRole').value,
+            dept: document.getElementById('uDept').value,
+            factory: document.getElementById('uFac').value,
+            gate_scope: document.getElementById('uScope').value,
+            phone: document.getElementById('uPhone').value.trim(),
+            password: document.getElementById('uPass').value,
+            enabled: document.getElementById('uEnabled').checked,
+            perms,
+          }),
+        });
+        closeModal();
+        showToast('User saved!');
+        await bootSession();
+        switchView('users');
+      } catch (err) { showToast(err.message, true); }
+    }
+
+    async function deleteUser(uname) {
+      if (!confirm(`Delete user '${uname}'?`)) return;
+      try {
+        await api(`/api/users/${encodeURIComponent(uname)}`, { method: 'DELETE' });
+        showToast('User deleted');
+        await bootSession();
+        switchView('users');
+      } catch (err) { showToast(err.message, true); }
+    }
+
+    function downloadSampleUsersCsv() {
+      const sample = [
+        ['username', 'full_name', 'role', 'dept', 'factory', 'phone', 'password', 'enabled'],
+        ['rahul.sales', 'Rahul Sharma', 'Staff', 'Sales', 'UNIT-1', '9820011223', 'Welcome@123', 'true'],
+        ['priya.accounts', 'Priya Deshmukh', 'Department Head', 'Accounts', 'UNIT-1', '9820011224', 'Welcome@123', 'true'],
+        ['gate.guard1', 'Main Gate Security', 'Security Gate', 'Security Gate', 'UNIT-1', '9820011225', 'Guard@1234', 'true'],
+      ];
+      const csv = sample.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\r\n');
+      downloadBlob(csv, 'Shree-GatePass-Users-Sample.csv', 'text/csv;charset=utf-8;');
+    }
+
+    function triggerBulkUsersImport() { document.getElementById('bulkUserFileInput').click(); }
+
+    function parseCsvSimple(text) {
+      const lines = text.replace(/\r/g, '').split('\n').filter(Boolean);
+      if (lines.length < 2) return [];
+      const splitLine = line => line.match(/("([^"]|"")*"|[^,]*)(,|$)/g).slice(0, -1).map(s => s.replace(/,$/, '').replace(/^"|"$/g, '').replace(/""/g, '"').trim());
+      const headers = splitLine(lines[0]);
+      return lines.slice(1).map(line => {
+        const cols = splitLine(line);
+        const obj = {};
+        headers.forEach((h, i) => { obj[h] = cols[i] ?? ''; });
+        return obj;
+      });
+    }
+
+    async function handleBulkUsersFile(e) {
+      const file = e.target.files?.[0];
+      e.target.value = '';
+      if (!file) return;
+      try {
+        let rows = [];
+        if (file.name.toLowerCase().endsWith('.csv')) {
+          rows = parseCsvSimple(await file.text());
+        } else if (window.XLSX) {
+          const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+          rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' });
+        } else {
+          throw new Error('Excel library offline — please upload a .csv file or check network');
+        }
+        const res = await api('/api/users/bulk', { method: 'POST', body: JSON.stringify({ users: rows, mode: 'upsert' }) });
+        showToast(`Bulk Import: ${res.created} created, ${res.updated} updated, ${res.skipped} skipped`);
+        await bootSession();
+        switchView('users');
+      } catch (err) { showToast(err.message, true); }
+    }
+
+    function exportUsersFile() {
+      const data = (APP.users || []).map(u => ({
+        username: u.username,
+        full_name: u.full_name,
+        role: u.role,
+        dept: u.dept || '',
+        factory: u.factory || '',
+        phone: u.phone || '',
+        gate_scope: u.gate_scope || 'user',
+        enabled: u.enabled,
+      }));
+      if (window.XLSX) {
+        const ws = XLSX.utils.json_to_sheet(data);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, 'Users');
+        XLSX.writeFile(wb, 'Shree-GatePass-Users.xlsx');
+        return;
+      }
+      const cols = ['username', 'full_name', 'role', 'dept', 'factory', 'phone', 'gate_scope', 'enabled'];
+      const csv = [cols.join(','), ...data.map(r => cols.map(c => `"${String(r[c] ?? '').replace(/"/g,'""')}"`).join(','))].join('\r\n');
+      downloadBlob(csv, 'Shree-GatePass-Users.csv', 'text/csv;charset=utf-8;');
+    }
+
+    function downloadBlob(content, filename, type) {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([content], { type }));
+      a.download = filename;
+      a.click();
+    }
+
+    /* ---------------- DEPARTMENTS & FACTORIES & BACKUPS & SETTINGS ---------------- */
+    function renderDepartments() {
+      document.getElementById('deptListWrap').innerHTML = APP.departments.map((d, i) => `
+        <div style="border:1px solid var(--border);border-radius:11px;padding:10px 12px;display:flex;justify-content:space-between;align-items:center;background:#f8fbf9">
+          <b>${esc(d)}</b>
+          <button class="btn" style="padding:4px 8px;font-size:12px" onclick="removeDepartment(${i})">✕</button>
+        </div>
+      `).join('');
+    }
+    async function addDepartment() {
+      const val = document.getElementById('newDeptInput').value.trim();
+      if (!val) return;
+      const next = [...APP.departments, val];
+      await api('/api/departments', { method: 'POST', body: JSON.stringify({ departments: next }) });
+      document.getElementById('newDeptInput').value = '';
+      await bootSession(); switchView('departments');
+    }
+    async function removeDepartment(idx) {
+      const next = APP.departments.filter((_, i) => i !== idx);
+      await api('/api/departments', { method: 'POST', body: JSON.stringify({ departments: next }) });
+      await bootSession(); switchView('departments');
+    }
+
+    function renderFactories() {
+      document.getElementById('factoryListWrap').innerHTML = APP.factories.map((f, i) => `
+        <div style="border:1px solid var(--border);border-radius:12px;padding:12px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;gap:10px">
+          <div><b>${esc(f.code)}</b> — ${esc(f.name)}<br><span style="font-size:12px;color:var(--muted)">${esc(f.desc || 'No description')}</span></div>
+          <div style="display:flex;gap:6px">
+            <button class="btn" onclick="openFactoryModal(${i})">Edit</button>
+            <button class="btn btn-danger" onclick="deleteFactory(${i})">Remove</button>
+          </div>
+        </div>
+      `).join('');
+    }
+    function openFactoryModal(idx = -1) {
+      const f = idx >= 0 ? APP.factories[idx] : { code: '', name: '', desc: '' };
+      openModal(`
+        <div class="modal-hd"><h2>${idx >= 0 ? 'Edit Factory' : 'Add Factory'}</h2><button class="btn" onclick="closeModal()">✕</button></div>
+        <form onsubmit="saveFactoryForm(event, ${idx})" class="form-2">
+          <div class="f-group"><label>Code *</label><input id="fCode" value="${esc(f.code)}" required></div>
+          <div class="f-group"><label>Name *</label><input id="fName" value="${esc(f.name)}" required></div>
+          <div class="f-group full"><label>Description / Gate Location</label><input id="fDesc" value="${esc(f.desc || '')}"></div>
+          <div class="f-group full"><button type="submit" class="btn btn-primary btn-full">Save Factory</button></div>
+        </form>
+      `);
+    }
+    async function saveFactoryForm(e, idx) {
+      e.preventDefault();
+      const item = { code: document.getElementById('fCode').value.trim().toUpperCase(), name: document.getElementById('fName').value.trim(), desc: document.getElementById('fDesc').value.trim() };
+      const list = [...APP.factories];
+      if (idx >= 0) list[idx] = item; else list.push(item);
+      await api('/api/factories', { method: 'POST', body: JSON.stringify({ factories: list }) });
+      closeModal(); await bootSession(); switchView('factories');
+    }
+    async function deleteFactory(idx) {
+      const list = APP.factories.filter((_, i) => i !== idx);
+      await api('/api/factories', { method: 'POST', body: JSON.stringify({ factories: list }) });
+      await bootSession(); switchView('factories');
+    }
+
+    async function loadBackupsView() {
+      const wrap = document.getElementById('backupListWrap');
+      try {
+        const res = await api('/api/backups');
+        wrap.innerHTML = (res.backups || []).length ? res.backups.map(b => `
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border)">
+            <div><b>${esc(b.name)}</b><br><span style="font-size:12px;color:var(--muted)">${(b.size / 1024).toFixed(1)} KB · ${new Date(b.created_at).toLocaleString()}</span></div>
+            <a class="btn btn-soft" href="/api/backups/${encodeURIComponent(b.name)}">⬇ Download</a>
+          </div>
+        `).join('') : '<p style="color:var(--muted)">No backup archives found yet.</p>';
+      } catch (err) { wrap.innerHTML = `<p style="color:var(--danger)">${esc(err.message)}</p>`; }
+    }
+    async function createManualBackup() {
+      const btn = document.getElementById('btnCreateBackup');
+      btn.disabled = true; btn.textContent = 'Creating backup…';
+      try {
+        const res = await api('/api/backups', { method: 'POST', body: '{}' });
+        showToast('Backup created: ' + res.name);
+        await loadBackupsView();
+      } catch (err) { showToast(err.message, true); }
+      finally { btn.disabled = false; btn.textContent = '+ Create Manual Backup'; }
+    }
+
+    function renderSettings() {
+      document.getElementById('setCompany').value = APP.settings.company || '';
+      document.getElementById('setSiteName').value = APP.settings.site_name || '';
+      document.getElementById('setPortalTitle').value = APP.settings.portal_title || '';
+      document.getElementById('setRetDays').value = APP.settings.default_returnable_days || 7;
+    }
+    async function saveSettings() {
+      await api('/api/settings', {
+        method: 'POST',
+        body: JSON.stringify({
+          company: document.getElementById('setCompany').value.trim(),
+          site_name: document.getElementById('setSiteName').value.trim(),
+          portal_title: document.getElementById('setPortalTitle').value.trim(),
+          default_returnable_days: parseInt(document.getElementById('setRetDays').value || '7', 10),
+        }),
+      });
+      showToast('Settings saved!'); await bootSession(); switchView('settings');
+    }
+    async function changeOwnPassword() {
+      try {
+        await api('/api/account/password', {
+          method: 'POST',
+          body: JSON.stringify({ current_password: document.getElementById('ownCurPw').value, new_password: document.getElementById('ownNewPw').value }),
+        });
+        document.getElementById('ownCurPw').value = ''; document.getElementById('ownNewPw').value = '';
+        showToast('Password changed successfully!');
+      } catch (err) { showToast(err.message, true); }
+    }
+
+    /* ---------------- SHARED MODALS & CAMERA HELPERS ---------------- */
+    function factoryOptsHtml(selVal = '') {
+      return APP.factories.map(f => `<option value="${esc(f.code)}" ${selVal===f.code?'selected':''}>${esc(f.name || f.code)}</option>`).join('');
+    }
+    function deptOptsHtml(selVal = '') {
+      return APP.departments.map(d => `<option value="${esc(d)}" ${selVal===d?'selected':''}>${esc(d)}</option>`).join('');
+    }
+    function refreshModalHosts(prefix) {
+      const fac = (document.getElementById(prefix + 'Fac')?.value || '').toLowerCase();
+      const dept = (document.getElementById(prefix + 'Dept')?.value || '').toLowerCase();
+      const sel = document.getElementById(prefix + 'Host');
+      if (!sel) return;
+      const list = (APP.directory || []).filter(u => (!fac || !u.factory || u.factory.toLowerCase() === fac) && (!dept || !u.dept || u.dept.toLowerCase() === dept));
+      sel.innerHTML = '<option value="">Anyone in Selected Department</option>' + list.map(u => `<option value="${esc(u.username)}">${esc(u.full_name)} (${esc(u.dept || u.role)})</option>`).join('');
+    }
+
+    function openModal(html) {
+      document.getElementById('modalContent').innerHTML = html;
+      document.getElementById('modalBackdrop').classList.remove('hidden');
+    }
+    function closeModal() { document.getElementById('modalBackdrop').classList.add('hidden'); }
+    function openPhotoPreview(url) {
+      openModal(`<div class="modal-hd"><h2>Photo Preview</h2><button class="btn" onclick="closeModal()">✕</button></div><img src="${esc(url)}" style="width:100%;max-height:72vh;object-fit:contain;border-radius:12px">`);
+    }
+
+    function modalCapture(bucket, preferCam) {
+      APP.photoCallbackBucket = bucket;
+      if (preferCam && window.ShreeAndroid && typeof window.ShreeAndroid.openCamera === 'function') {
+        try { window.ShreeAndroid.openCamera('__shreeAppCameraDone'); return; } catch (_) {}
+      }
+      const inp = document.getElementById(preferCam ? 'appCamInput' : 'appFileInput');
+      inp.value = '';
+      inp.click();
+    }
+    window.__shreeAppCameraDone = function (urlOrData) {
+      if (!urlOrData) return;
+      fetch(urlOrData).then(r => r.blob()).then(b => uploadModalFiles([new File([b], 'camera.jpg', { type: b.type || 'image/jpeg' })]));
+    };
+    async function uploadModalFiles(files) {
+      const fd = new FormData();
+      Array.from(files).forEach(f => fd.append('files', f));
+      const res = await fetch('/api/gate-media', { method: 'POST', body: fd, headers: { 'X-Requested-With': 'ShreeGatePass' } }).then(r => r.json());
+      const urls = res.urls || (res.url ? [res.url] : []);
+      APP.modalPhotos[APP.photoCallbackBucket].push(...urls);
+      const box = document.getElementById('modalThumbs-' + APP.photoCallbackBucket);
+      if (box) box.innerHTML = APP.modalPhotos[APP.photoCallbackBucket].map(u => `<img class="thumb-mini" src="${esc(u)}">`).join('');
+    }
+    document.getElementById('appCamInput').addEventListener('change', e => { if (e.target.files?.length) uploadModalFiles(e.target.files); });
+    document.getElementById('appFileInput').addEventListener('change', e => { if (e.target.files?.length) uploadModalFiles(e.target.files); });
+
+    /* ---------------- STARTUP CHECK ---------------- */
+    (async function init() {
+      try {
+        const st = await fetch('/api/setup/status').then(r => r.json());
+        if (!st.configured) { location.replace('/setup'); return; }
+        if (st.company) document.getElementById('loginCompanyName').textContent = st.company;
+      } catch (_) {}
+      try {
+        await bootSession();
+        const v = new URLSearchParams(location.search).get('view');
+        if (v) switchView(v);
+      } catch (_) {}
+    })();
+  </script>
+</body>
+</html>

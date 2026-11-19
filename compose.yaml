@@ -1,0 +1,64 @@
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: gatepass
+      POSTGRES_USER: gatepass
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+      TZ: ${TZ:-Asia/Kolkata}
+    volumes:
+      - gatepass_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gatepass -d gatepass"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+    networks: [internal]
+
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "127.0.0.1:${APP_PORT:-18050}:8000"
+    environment:
+      DATABASE_URL: postgresql://gatepass:${DB_PASSWORD}@db:5432/gatepass
+      UPLOAD_DIR: /app/uploads
+      BACKUP_DIR: /backups
+      COOKIE_SECURE: "${COOKIE_SECURE:-false}"
+    volumes:
+      - ./uploads:/app/uploads
+      - ./backups:/backups
+      - ./secrets/nginx.crt:/app/secrets/nginx.crt:ro
+      - ./secrets/ca.crt:/app/secrets/ca.crt:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [internal]
+
+  web:
+    image: nginx:stable-alpine
+    restart: unless-stopped
+    environment:
+      APP_FQDN: ${APP_FQDN:-localhost}
+      SITE_NAME: ${SITE_NAME:-gatepass.local}
+      HTTP_PORT: ${HTTP_PORT:-8858}
+      HTTPS_PORT: ${HTTPS_PORT:-8859}
+      NGINX_ENVSUBST_FILTER: '^(APP_FQDN|SITE_NAME|HTTP_PORT|HTTPS_PORT)$'
+    ports:
+      - "${HTTP_PORT:-8858}:${HTTP_PORT:-8858}"
+      - "${HTTPS_PORT:-8859}:${HTTPS_PORT:-8859}"
+    volumes:
+      - ./nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./secrets/nginx.crt:/etc/nginx/certs/nginx.crt:ro
+      - ./secrets/nginx.key:/etc/nginx/certs/nginx.key:ro
+    depends_on: [app]
+    networks: [internal]
+
+volumes:
+  gatepass_postgres_data:
+
+networks:
+  internal:
+    driver: bridge
