@@ -47,8 +47,7 @@
       border-radius: 20px; padding: 28px 26px; box-shadow: 0 24px 60px rgba(10, 32, 22, 0.14); text-align: center;
     }
     .login-logo { width: 72px; height: 72px; border-radius: 18px; border: 2px solid var(--gold); box-shadow: 0 10px 24px rgba(5,20,51,.22); margin-bottom: 8px; object-fit: cover; background: #051433; }
-    .login-card h1 { margin: 4px 0 4px; font-size: 23px; font-weight: 800; }
-    .login-sub { font-size: 13px; color: var(--muted); margin: 0 0 16px; }
+    .login-card h1 { margin: 4px 0 16px; font-size: 23px; font-weight: 800; }
     .mode-switch { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 4px; background: var(--surface-soft); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 16px; }
     .mode-btn { padding: 8px 6px; border: 0; border-radius: 9px; background: transparent; font-weight: 700; font-size: 12.5px; cursor: pointer; color: var(--muted); }
     .mode-btn.active { background: #0f2920; color: #fff; }
@@ -177,7 +176,6 @@
     <div class="login-card">
       <img class="login-logo" id="loginLogoImg" src="/static/icons/icon-192.png?v=1" alt="Shree GatePass">
       <h1 id="loginCompanyName">Shree GatePass</h1>
-      <p class="login-sub" id="loginSubTitle">Multi-Organization Visitor &amp; Material Gate Pass SaaS</p>
 
       <div class="mode-switch">
         <button type="button" id="btnModeOrg" class="mode-btn active" onclick="setLoginMode('org')">🏢 Organization Login</button>
