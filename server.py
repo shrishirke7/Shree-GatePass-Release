@@ -1607,6 +1607,8 @@ def api_super_delete_org(conn, sa, org_id):
     if not org:
         return jsonify({"error": "Organization not found"}), 404
     oid = org["id"]
+    if oid == DEFAULT_ORG_ID:
+        return jsonify({"error": "Primary platform organization cannot be deleted"}), 400
     with conn.cursor() as cur:
         for table in ("visitor_passes", "material_gate_passes", "notification_events", "user_notification_prefs", "org_state", "audit_logs"):
             cur.execute(f"DELETE FROM {table} WHERE org_id=%s", (oid,))
@@ -1962,8 +1964,8 @@ def api_public_portal_options():
         factories = _get_org_state(conn, oid, "factories", DEFAULT_FACTORIES) or DEFAULT_FACTORIES
         order = _get_org_state(conn, oid, "factoryOrder", [f["code"] for f in factories]) or []
         departments = _get_org_state(conn, oid, "departments", None)
-    if departments is None:
-        departments = list(DEFAULT_DEPARTMENTS)
+        if departments is None:
+            departments = list(DEFAULT_DEPARTMENTS)
         settings = _get_org_state(conn, oid, "settings", dict(DEFAULT_SETTINGS)) or dict(DEFAULT_SETTINGS)
         users = _get_org_state(conn, oid, "manual_users", []) or []
     employees = [

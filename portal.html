@@ -154,6 +154,9 @@
     .hidden { display: none !important; }
     @media (max-width: 860px) { .panel-grid { grid-template-columns: 1fr; } }
     @media (max-width: 560px) {
+      .topbar { padding: 10px 12px; gap: 10px; }
+      .brand { flex: 1 1 100%; }
+      .topbar-actions { width: 100%; justify-content: flex-end; }
       .form-grid { grid-template-columns: 1fr; }
       .brand-title { font-size: 15px; }
       .tile-btn { min-height: 114px; padding: 14px 8px; }
@@ -369,8 +372,10 @@
     }
     function populateSelectors(prefix) {
       const fSel = document.getElementById(prefix + 'Factory'), dSel = document.getElementById(prefix + 'Dept');
-      fSel.innerHTML = (STATE.options.factories || []).map(f => `<option value="${esc(f.code)}">${esc(f.name || f.code)}</option>`).join('') + '<option value="">General Gate</option>';
-      dSel.innerHTML = (STATE.options.departments || []).map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join('');
+      const facs = STATE.options.factories || [];
+      const depts = (STATE.options.departments && STATE.options.departments.length) ? STATE.options.departments : ['General'];
+      fSel.innerHTML = facs.map(f => `<option value="${esc(f.code)}">${esc(f.name || f.code)}</option>`).join('') + '<option value="">General Gate</option>';
+      dSel.innerHTML = depts.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join('');
       refreshHostsOnly(prefix);
     }
     function refreshHostsOnly(prefix) {
@@ -396,9 +401,13 @@
       } catch (err) { showToast(err.message || 'Could not upload photo', true); }
     }
     function renderThumbStrip(bucket) {
-      document.getElementById(bucket + 'Thumbs').innerHTML = (STATE.photos[bucket] || []).map((u, idx) => `
-        <div class="thumb-item"><img src="${esc(u)}" alt="Photo ${idx + 1}"><button type="button" class="thumb-del" onclick="removePhoto('${bucket}', ${idx})">✕</button></div>
-      `).join('');
+      document.getElementById(bucket + 'Thumbs').innerHTML = (STATE.photos[bucket] || []).map((u, idx) => {
+        const isPdf = String(u || '').split('?')[0].toLowerCase().endsWith('.pdf');
+        const inner = isPdf
+          ? `<a href="${esc(u)}" target="_blank" style="display:grid;place-items:center;width:100%;height:100%;font-size:11px;font-weight:800;color:#0f2920;text-decoration:none">📄 PDF</a>`
+          : `<img src="${esc(u)}" alt="Photo ${idx + 1}">`;
+        return `<div class="thumb-item">${inner}<button type="button" class="thumb-del" onclick="removePhoto('${bucket}', ${idx})">✕</button></div>`;
+      }).join('');
     }
     function removePhoto(bucket, idx) { STATE.photos[bucket].splice(idx, 1); renderThumbStrip(bucket); }
     function triggerPhotoCapture(bucket, preferCamera) {
@@ -565,6 +574,7 @@
           document.getElementById('kioskWorkspace').classList.add('hidden');
           document.getElementById('orgSelectCard').classList.remove('hidden');
           if (explicitTry || opt.error) document.getElementById('orgSelectErr').textContent = opt.error || 'Enter a valid Company Code';
+          if (res.status >= 500) showToast(opt.error || 'Gate server error loading options', true);
           return;
         }
         STATE.options = opt;
@@ -583,6 +593,7 @@
         await loadQueues();
       } catch (err) {
         if (explicitTry) document.getElementById('orgSelectErr').textContent = err.message;
+        else showToast('Could not connect to Gate server: ' + (err.message || 'Network error'), true);
       }
     }
 
