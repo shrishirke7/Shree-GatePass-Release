@@ -1675,7 +1675,9 @@ def api_data(conn, org, user):
     factories = _get_org_state(conn, oid, "factories", DEFAULT_FACTORIES) or DEFAULT_FACTORIES
     factory_order = _get_org_state(conn, oid, "factoryOrder", [f["code"] for f in factories]) or []
     factory_descs = _get_org_state(conn, oid, "factoryDescs", {}) or {}
-    departments = _get_org_state(conn, oid, "departments", DEFAULT_DEPARTMENTS) or DEFAULT_DEPARTMENTS
+    departments = _get_org_state(conn, oid, "departments", None)
+    if departments is None:
+        departments = list(DEFAULT_DEPARTMENTS)
     settings = _get_org_state(conn, oid, "settings", dict(DEFAULT_SETTINGS)) or dict(DEFAULT_SETTINGS)
     sound_cfg = _get_org_state(conn, oid, "sound_config", dict(DEFAULT_SOUND_CONFIG)) or dict(DEFAULT_SOUND_CONFIG)
     raw_users = _get_org_state(conn, oid, "manual_users", []) or []
@@ -1959,7 +1961,9 @@ def api_public_portal_options():
         oid = org["id"]
         factories = _get_org_state(conn, oid, "factories", DEFAULT_FACTORIES) or DEFAULT_FACTORIES
         order = _get_org_state(conn, oid, "factoryOrder", [f["code"] for f in factories]) or []
-        departments = _get_org_state(conn, oid, "departments", DEFAULT_DEPARTMENTS) or DEFAULT_DEPARTMENTS
+        departments = _get_org_state(conn, oid, "departments", None)
+    if departments is None:
+        departments = list(DEFAULT_DEPARTMENTS)
         settings = _get_org_state(conn, oid, "settings", dict(DEFAULT_SETTINGS)) or dict(DEFAULT_SETTINGS)
         users = _get_org_state(conn, oid, "manual_users", []) or []
     employees = [

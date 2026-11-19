@@ -425,7 +425,14 @@
 
         <section id="view-departments" class="view-pane hidden">
           <div class="page-hd"><div><h1>Departments</h1><p>Configure factory departments used in Visitor Pass routing and Material Gate Passes.</p></div></div>
-          <div class="card"><div class="toolbar"><input id="newDeptInput" class="input" placeholder="Add new department (e.g. Packaging)" style="min-width:240px"><button type="button" class="btn btn-primary" onclick="addDepartment()">+ Add Department</button></div><div id="deptListWrap" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px"></div></div>
+          <div class="card">
+            <form id="deptAddForm" class="toolbar" onsubmit="addDepartment(event)">
+              <input id="newDeptInput" class="input" placeholder="Add new department (e.g. Packaging)" style="flex:1;min-width:180px;max-width:360px">
+              <button type="submit" id="addDeptBtn" class="btn btn-primary">+ Add Department</button>
+            </form>
+            <p id="deptReadOnlyHint" class="hidden" style="margin:0 0 10px;font-size:12.5px;color:var(--muted)">🔒 Read-only access: Ask an <b>Administrator</b> to add/remove departments or enable <b>Read &amp; write</b> permission for you.</p>
+            <div id="deptListWrap" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px"></div>
+          </div>
         </section>
 
         <section id="view-factories" class="view-pane hidden">
@@ -1253,8 +1260,9 @@
     }
     function startLiveSync() {
       if (APP.sse) APP.sse.close();
+      if (APP.pollTimer) clearInterval(APP.pollTimer);
       try { APP.sse = new EventSource('/api/live-stream'); APP.sse.addEventListener('alert', e => { try { handleIncomingAlertEvent(JSON.parse(e.data)); } catch (_) {} }); } catch (_) {}
-      setInterval(async () => {
+      APP.pollTimer = setInterval(async () => {
         try {
           const p = await fetch('/api/live-pulse').then(r => r.json());
           if (p.visitorRev !== APP.revisions.visitorRev) { APP.revisions.visitorRev = p.visitorRev; await loadVisitors(); if (APP.currentView === 'visitors' || APP.currentView === 'dashboard') renderCurrentView(); }
@@ -1326,17 +1334,81 @@
     }
     function downloadBlob(content, filename, type) { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([content], { type })); a.download = filename; a.click(); }
 
-    function renderDepartments() { document.getElementById('deptListWrap').innerHTML = APP.departments.map((d, i) => `<div style="border:1px solid var(--border);border-radius:11px;padding:10px 12px;display:flex;justify-content:space-between;align-items:center;background:#f8fbf9"><b>${esc(d)}</b><button class="btn" style="padding:4px 8px;font-size:12px" onclick="removeDepartment(${i})">✕</button></div>`).join(''); }
-    async function addDepartment() { const val = document.getElementById('newDeptInput').value.trim(); if (!val) return; await api('/api/departments', { method: 'POST', body: JSON.stringify({ departments: [...APP.departments, val] }) }); document.getElementById('newDeptInput').value = ''; await bootSession(); switchView('departments'); }
-    async function removeDepartment(idx) { await api('/api/departments', { method: 'POST', body: JSON.stringify({ departments: APP.departments.filter((_, i) => i !== idx) }) }); await bootSession(); switchView('departments'); }
+    function renderDepartments() {
+      const canEdit = hasPerm('departments', 'rw');
+      document.getElementById('deptAddForm')?.classList.toggle('hidden', !canEdit);
+      document.getElementById('deptReadOnlyHint')?.classList.toggle('hidden', canEdit);
+      const list = APP.departments || [];
+      document.getElementById('deptListWrap').innerHTML = list.length
+        ? list.map((d, i) => `<div style="border:1px solid var(--border);border-radius:11px;padding:10px 12px;display:flex;justify-content:space-between;align-items:center;background:#f8fbf9"><b>${esc(d)}</b>${canEdit ? `<button type="button" class="btn" style="padding:4px 8px;font-size:12px" onclick="removeDepartment(${i})">✕</button>` : ''}</div>`).join('')
+        : '<p style="color:var(--muted);margin:0">No departments configured yet.</p>';
+    }
+    async function addDepartment(e) {
+      if (e && typeof e.preventDefault === 'function') e.preventDefault();
+      const inp = document.getElementById('newDeptInput');
+      const btn = document.getElementById('addDeptBtn');
+      const val = (inp?.value || '').trim();
+      if (!val) { showToast('Please enter a department name', true); inp?.focus(); return; }
+      if ((APP.departments || []).some(d => String(d).trim().toLowerCase() === val.toLowerCase())) {
+        showToast(`Department "${val}" already exists`, true);
+        inp?.focus();
+        return;
+      }
+      if (btn) btn.disabled = true;
+      try {
+        const res = await api('/api/departments', { method: 'POST', body: JSON.stringify({ departments: [...(APP.departments || []), val] }) });
+        APP.departments = Array.isArray(res.departments) ? res.departments : [...(APP.departments || []), val];
+        if (inp) inp.value = '';
+        renderDepartments();
+        showToast(`Department "${val}" added!`);
+      } catch (err) {
+        showToast(err.message || 'Could not add department', true);
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    }
+    async function removeDepartment(idx) {
+      const targetName = (APP.departments || [])[idx] || 'department';
+      try {
+        const res = await api('/api/departments', { method: 'POST', body: JSON.stringify({ departments: (APP.departments || []).filter((_, i) => i !== idx) }) });
+        APP.departments = Array.isArray(res.departments) ? res.departments : (APP.departments || []).filter((_, i) => i !== idx);
+        renderDepartments();
+        showToast(`Removed "${targetName}"`);
+      } catch (err) {
+        showToast(err.message || 'Could not remove department', true);
+      }
+    }
 
-    function renderFactories() { document.getElementById('factoryListWrap').innerHTML = APP.factories.map((f, i) => `<div style="border:1px solid var(--border);border-radius:12px;padding:12px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;gap:10px"><div><b>${esc(f.code)}</b> — ${esc(f.name)}<br><span style="font-size:12px;color:var(--muted)">${esc(f.desc || 'No description')}</span></div><div style="display:flex;gap:6px"><button class="btn" onclick="openFactoryModal(${i})">Edit</button><button class="btn btn-danger" onclick="deleteFactory(${i})">Remove</button></div></div>`).join(''); }
+    function renderFactories() {
+      const canEdit = hasPerm('factories', 'rw');
+      document.getElementById('factoryListWrap').innerHTML = APP.factories.map((f, i) => `<div style="border:1px solid var(--border);border-radius:12px;padding:12px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;gap:10px"><div><b>${esc(f.code)}</b> — ${esc(f.name)}<br><span style="font-size:12px;color:var(--muted)">${esc(f.desc || 'No description')}</span></div>${canEdit ? `<div style="display:flex;gap:6px"><button class="btn" onclick="openFactoryModal(${i})">Edit</button><button class="btn btn-danger" onclick="deleteFactory(${i})">Remove</button></div>` : ''}</div>`).join('');
+    }
     function openFactoryModal(idx = -1) {
       const f = idx >= 0 ? APP.factories[idx] : { code: '', name: '', desc: '' };
       openModal(`<div class="modal-hd"><h2>${idx >= 0 ? 'Edit Factory' : 'Add Factory'}</h2><button class="btn" onclick="closeModal()">✕</button></div><form onsubmit="saveFactoryForm(event, ${idx})" class="form-2"><div class="f-group"><label>Code *</label><input id="fCode" value="${esc(f.code)}" required></div><div class="f-group"><label>Name *</label><input id="fName" value="${esc(f.name)}" required></div><div class="f-group full"><label>Description / Gate Location</label><input id="fDesc" value="${esc(f.desc || '')}"></div><div class="f-group full"><button type="submit" class="btn btn-primary btn-full">Save Factory</button></div></form>`);
     }
-    async function saveFactoryForm(e, idx) { e.preventDefault(); const item = { code: document.getElementById('fCode').value.trim().toUpperCase(), name: document.getElementById('fName').value.trim(), desc: document.getElementById('fDesc').value.trim() }, list = [...APP.factories]; if (idx >= 0) list[idx] = item; else list.push(item); await api('/api/factories', { method: 'POST', body: JSON.stringify({ factories: list }) }); closeModal(); await bootSession(); switchView('factories'); }
-    async function deleteFactory(idx) { await api('/api/factories', { method: 'POST', body: JSON.stringify({ factories: APP.factories.filter((_, i) => i !== idx) }) }); await bootSession(); switchView('factories'); }
+    async function saveFactoryForm(e, idx) {
+      e.preventDefault();
+      try {
+        const item = { code: document.getElementById('fCode').value.trim().toUpperCase(), name: document.getElementById('fName').value.trim(), desc: document.getElementById('fDesc').value.trim() }, list = [...APP.factories];
+        if (idx >= 0) list[idx] = item; else list.push(item);
+        const res = await api('/api/factories', { method: 'POST', body: JSON.stringify({ factories: list }) });
+        APP.factories = Array.isArray(res.factories) ? res.factories : list;
+        const facSel = document.getElementById('globalFactoryFilter');
+        if (facSel) facSel.innerHTML = '<option value="">All Factories</option>' + APP.factories.map(f => `<option value="${esc(f.code)}">${esc(f.name || f.code)}</option>`).join('');
+        closeModal(); renderFactories(); showToast('Factory saved!');
+      } catch (err) { showToast(err.message || 'Could not save factory', true); }
+    }
+    async function deleteFactory(idx) {
+      try {
+        const list = APP.factories.filter((_, i) => i !== idx);
+        const res = await api('/api/factories', { method: 'POST', body: JSON.stringify({ factories: list }) });
+        APP.factories = Array.isArray(res.factories) ? res.factories : list;
+        const facSel = document.getElementById('globalFactoryFilter');
+        if (facSel) facSel.innerHTML = '<option value="">All Factories</option>' + APP.factories.map(f => `<option value="${esc(f.code)}">${esc(f.name || f.code)}</option>`).join('');
+        renderFactories(); showToast('Factory removed');
+      } catch (err) { showToast(err.message || 'Could not remove factory', true); }
+    }
 
     async function loadBackupsView() {
       const wrap = document.getElementById('backupListWrap');
@@ -1375,8 +1447,10 @@
       `;
     }
     async function saveSettings() {
-      await api('/api/settings', { method: 'POST', body: JSON.stringify({ company: document.getElementById('setCompany').value.trim(), portal_title: document.getElementById('setPortalTitle').value.trim(), default_returnable_days: parseInt(document.getElementById('setRetDays').value || '7', 10) }) });
-      showToast('Settings saved!'); await bootSession(); switchView('settings');
+      try {
+        await api('/api/settings', { method: 'POST', body: JSON.stringify({ company: document.getElementById('setCompany').value.trim(), portal_title: document.getElementById('setPortalTitle').value.trim(), default_returnable_days: parseInt(document.getElementById('setRetDays').value || '7', 10) }) });
+        showToast('Settings saved!'); await bootSession(); switchView('settings');
+      } catch (err) { showToast(err.message || 'Could not save settings', true); }
     }
     async function uploadOrgLogo() {
       const inp = document.getElementById('orgLogoFileInput'); if (!inp.files?.length) return;
