@@ -151,6 +151,13 @@
     .thumb-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
     .thumb-mini { width: 44px; height: 44px; border-radius: 8px; object-fit: cover; border: 1px solid var(--border); cursor: pointer; }
     .toast { position: fixed; bottom: 18px; right: 18px; max-width: 360px; background: #0f2920; color: #fff; padding: 12px 16px; border-radius: 12px; font-size: 13px; font-weight: 700; z-index: 5000; display: none; box-shadow: 0 12px 30px rgba(0,0,0,0.24); }
+    .notif-group { border: 1px solid var(--border); border-radius: 13px; padding: 12px 13px; margin-bottom: 9px; background: #fff; transition: border-color .14s ease, box-shadow .14s ease; }
+    .notif-group.unread { background: #f2faf6; border-color: #b7decb; }
+    .notif-group.expandable { cursor: pointer; }
+    .notif-group.expandable:hover { border-color: #8cc5a8; box-shadow: 0 4px 12px rgba(21,122,84,.08); }
+    .notif-sublist { margin-top: 10px; padding-left: 11px; border-left: 3px solid #9dd4b8; display: flex; flex-direction: column; gap: 7px; }
+    .notif-subbox { padding: 9px 11px; border: 1px solid var(--border); border-radius: 10px; background: #fff; }
+    .notif-subbox.unread { background: #f8fdfb; border-color: #c2e3d3; }
 
     @media (max-width: 920px) {
       .app-shell { grid-template-columns: 1fr; }
@@ -349,7 +356,7 @@
         </section>
 
         <section id="view-visitors" class="view-pane hidden">
-          <div class="page-hd"><div><h1>Visitor Pass Management</h1><p>4-Step Lifecycle: <b>Pending Approval</b> → <b>Approved</b> → <b>Checked In</b> → <b>Checked Out</b></p></div><button type="button" class="btn btn-primary" onclick="openNewVisitorModal()">+ New Visitor Entry</button></div>
+          <div class="page-hd"><div><h1>Visitor Pass Management</h1><p>4-Step Lifecycle: <b>Pending Approval</b> → <b>Approved</b> → <b>Checked In</b> → <b>Checked Out</b></p></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="btn" onclick="exportReport('visitors','xlsx')">📊 Excel (.xlsx)</button><button type="button" class="btn btn-soft" onclick="exportReport('visitors','zip')">📦 Excel + Photos (.zip)</button><button type="button" class="btn btn-primary" onclick="openNewVisitorModal()">+ New Visitor Entry</button></div></div>
           <div class="card">
             <div class="toolbar">
               <input id="vSearch" class="input" style="min-width:220px" placeholder="Search name, mobile, host, company…" oninput="renderVisitors()">
@@ -367,7 +374,7 @@
         </section>
 
         <section id="view-gatepasses" class="view-pane hidden">
-          <div class="page-hd"><div><h1>Material Gate Pass (IN / OUT)</h1><p>Track inward receipts, outward dispatches &amp; automated overdue reminders for returnable materials.</p></div><button type="button" class="btn btn-primary" onclick="openNewMaterialModal()">+ New Material Entry</button></div>
+          <div class="page-hd"><div><h1>Material Gate Pass (IN / OUT)</h1><p>Track inward receipts, outward dispatches &amp; automated overdue reminders for returnable materials.</p></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="btn" onclick="exportReport('gatepasses','xlsx')">📊 Excel (.xlsx)</button><button type="button" class="btn btn-soft" onclick="exportReport('gatepasses','zip')">📦 Excel + Photos/Docs (.zip)</button><button type="button" class="btn btn-primary" onclick="openNewMaterialModal()">+ New Material Entry</button></div></div>
           <div class="card">
             <div class="toolbar">
               <input id="mSearch" class="input" style="min-width:220px" placeholder="Search material, party, challan, vehicle…" oninput="renderGatePasses()">
@@ -427,7 +434,7 @@
         </section>
 
         <section id="view-backups" class="view-pane hidden">
-          <div class="page-hd"><div><h1>Organization Data Export</h1><p>Download a complete JSON snapshot of your company's Visitor Passes &amp; Material Gate records.</p></div><a class="btn btn-primary" href="/api/backups/export-json">⬇ Download My Organization Snapshot (.json)</a></div>
+          <div class="page-hd"><div><h1>Organization Data Export</h1><p>Export Visitor &amp; Material Gate Passes cleanly to Excel (with embedded photo thumbnails), complete Photo/Document ZIP bundles, or JSON snapshots.</p></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="btn btn-primary" onclick="exportReport('all','xlsx')">📊 Full Excel (.xlsx)</button><button type="button" class="btn btn-soft" onclick="exportReport('all','zip')">📦 Excel + Photos/Docs (.zip)</button><a class="btn" href="/api/backups/export-json">⬇ JSON Snapshot (.json)</a></div></div>
           <div class="card" id="backupListWrap">Loading organization statistics…</div>
         </section>
 
@@ -474,6 +481,7 @@
       soundConfig: {}, userNotifPrefs: {}, settings: {},
       currentView: 'dashboard', vTab: 'all', mTab: 'all',
       revisions: {}, modalPhotos: { a: [], b: [] }, photoCallbackBucket: '', sse: null, audioCtx: null,
+      expandedNotifGroups: {},
       superAdmin: null, superOrgs: [], superView: 'orgs',
     };
 
@@ -896,7 +904,7 @@
     function updateBadges() {
       const pendingV = APP.visitors.filter(v => v.status === 'Pending').length;
       const overdueM = APP.gatePasses.filter(g => g.overdue || (g.isReturnable && !g.returnedAt)).length;
-      const unreadN = APP.notifications.filter(n => !n.read).length;
+      const unreadN = groupNotifications(APP.notifications).filter(g => g.unreadCount > 0).length;
       const sbV = document.getElementById('sbBadgePending'); sbV.textContent = pendingV; sbV.classList.toggle('hidden', !pendingV);
       const sbM = document.getElementById('sbBadgeOverdue'); sbM.textContent = overdueM; sbM.classList.toggle('hidden', !overdueM);
       const sbN = document.getElementById('sbBadgeNotif'); sbN.textContent = unreadN; sbN.classList.toggle('hidden', !unreadN);
@@ -963,11 +971,36 @@
       if (s === 'Overdue') return '<span class="badge b-overdue">⚠ Overdue</span>';
       return `<span class="badge b-pending">⏳ ${esc(s)}</span>`;
     }
-    function visitorActionsHtml(v) {
-      if (v.status === 'Pending') return `<button class="btn btn-primary" onclick="decideVisitor('${esc(v.id)}','Approved')">✓ Approve</button><button class="btn btn-danger" onclick="decideVisitor('${esc(v.id)}','Rejected')">✕ Reject</button>`;
-      if (v.status === 'Approved') return `<button class="btn btn-blue" onclick="checkinVisitor('${esc(v.id)}')">📍 Check In</button><button class="btn" onclick="checkoutVisitor('${esc(v.id)}')">🚪 Check Out</button>`;
-      if (v.status === 'Checked In') return `<button class="btn btn-amber" onclick="checkoutVisitor('${esc(v.id)}')">🚪 Check Out</button>`;
-      return '<span style="font-size:12px;color:var(--muted)">Completed</span>';
+    function isAdmin() { return APP.user?.role === 'Administrator'; }
+    function mediaThumbHtml(u) {
+      return String(u || '').split('?')[0].toLowerCase().endsWith('.pdf')
+        ? `<a class="btn" style="padding:4px 8px;font-size:11px" href="${esc(u)}" target="_blank">📄 Doc</a>`
+        : `<img class="thumb-mini" src="${esc(u)}" onclick="openPhotoPreview('${esc(u)}')">`;
+    }
+    function exportReport(scope = 'all', format = 'xlsx') {
+      const params = new URLSearchParams({ scope, format });
+      const fac = document.getElementById('globalFactoryFilter')?.value || '';
+      if (fac) params.set('factory', fac);
+      if (scope === 'visitors') {
+        if (APP.vTab && APP.vTab !== 'all') params.set('status', APP.vTab);
+        const q = (document.getElementById('vSearch')?.value || '').trim();
+        if (q) params.set('q', q);
+      } else if (scope === 'gatepasses') {
+        if (APP.mTab && APP.mTab !== 'all') params.set('status', APP.mTab);
+        const q = (document.getElementById('mSearch')?.value || '').trim();
+        if (q) params.set('q', q);
+      }
+      showToast(format === 'zip' ? 'Preparing Excel + Photos/Docs ZIP bundle…' : 'Preparing Excel (.xlsx) workbook…');
+      window.location.href = `/api/export/excel?${params.toString()}`;
+    }
+
+    function visitorActionsHtml(v, allowDelete = false) {
+      const btns = [];
+      if (v.status === 'Pending') btns.push(`<button class="btn btn-primary" onclick="decideVisitor('${esc(v.id)}','Approved')">✓ Approve</button>`, `<button class="btn btn-danger" onclick="decideVisitor('${esc(v.id)}','Rejected')">✕ Reject</button>`);
+      else if (v.status === 'Approved') btns.push(`<button class="btn btn-blue" onclick="checkinVisitor('${esc(v.id)}')">📍 Check In</button>`, `<button class="btn" onclick="checkoutVisitor('${esc(v.id)}')">🚪 Check Out</button>`);
+      else if (v.status === 'Checked In') btns.push(`<button class="btn btn-amber" onclick="checkoutVisitor('${esc(v.id)}')">🚪 Check Out</button>`);
+      if (allowDelete && isAdmin()) btns.push(`<button class="btn btn-danger" onclick="deleteVisitor('${esc(v.id)}')">🗑 Delete</button>`);
+      return btns.length ? btns.join('') : '<span style="font-size:12px;color:var(--muted)">Completed</span>';
     }
     function setVTab(tab, btn) { APP.vTab = tab; document.querySelectorAll('#vStatusTabs .pill-tab').forEach(b => b.classList.remove('active')); btn.classList.add('active'); renderVisitors(); }
     function renderVisitors() {
@@ -979,9 +1012,9 @@
           <td><b>${esc(v.id)}</b><br><span style="font-size:11.5px;color:var(--muted)">${new Date(v.entryTime).toLocaleString([], {day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</span></td>
           <td><b>${esc(v.visitorName)}</b><br><span style="font-size:12px;color:var(--muted)">${esc(v.company || '-')} · ${esc(v.phone || '-')}</span><br><span style="font-size:11.5px;color:var(--muted)">Purpose: ${esc(v.purpose || '-')}</span></td>
           <td><b>${esc(v.hostName || 'Whole Dept')}</b><br><span style="font-size:12px;color:var(--muted)">${esc(v.department || '-')} · ${esc(v.factory || '-')}</span></td>
-          <td>${thumbs.length ? `<div class="thumb-row">${thumbs.map(u => `<img class="thumb-mini" src="${esc(u)}" onclick="openPhotoPreview('${esc(u)}')">`).join('')}</div>` : '<span style="color:var(--muted);font-size:12px">—</span>'}</td>
+          <td>${thumbs.length ? `<div class="thumb-row">${thumbs.map(u => mediaThumbHtml(u)).join('')}</div>` : '<span style="color:var(--muted);font-size:12px">—</span>'}</td>
           <td>${statusBadge(v.status)}<div style="font-size:11px;color:var(--muted);margin-top:4px;line-height:1.4">${v.approvedBy ? `Approved: ${esc(v.approvedBy)}<br>` : ''}${v.checkedInAt ? `In: ${new Date(v.checkedInAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})} (${esc(v.checkedInBy)})<br>` : ''}${v.checkedOutAt ? `Out: ${new Date(v.checkedOutAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})} (${esc(v.checkedOutBy)})` : ''}</div></td>
-          <td><div style="display:flex;gap:6px;flex-wrap:wrap">${visitorActionsHtml(v)}</div></td>
+          <td><div style="display:flex;gap:6px;flex-wrap:wrap">${visitorActionsHtml(v, true)}</div></td>
         </tr>`;
       }).join('') : '<tr><td colspan="6" style="color:var(--muted)">No matching visitor passes found.</td></tr>';
     }
@@ -991,6 +1024,10 @@
     }
     async function checkinVisitor(vid) { try { await api(`/api/visitors/${encodeURIComponent(vid)}/checkin`, { method: 'POST', body: '{}' }); showToast('Visitor Checked In'); await Promise.all([loadVisitors(), loadNotifs()]); renderCurrentView(); } catch (err) { showToast(err.message, true); } }
     async function checkoutVisitor(vid) { try { await api(`/api/visitors/${encodeURIComponent(vid)}/checkout`, { method: 'POST', body: '{}' }); showToast('Visitor Checked Out'); await Promise.all([loadVisitors(), loadNotifs()]); renderCurrentView(); } catch (err) { showToast(err.message, true); } }
+    async function deleteVisitor(vid) {
+      if (!confirm(`Delete visitor pass '${vid}' and its photos/documents permanently?`)) return;
+      try { await api(`/api/visitors/${encodeURIComponent(vid)}`, { method: 'DELETE' }); showToast('Visitor pass deleted'); await Promise.all([loadVisitors(), loadNotifs()]); renderCurrentView(); } catch (err) { showToast(err.message, true); }
+    }
 
     function openNewVisitorModal() {
       APP.modalPhotos = { a: [], b: [] };
@@ -1026,22 +1063,29 @@
       const fac = document.getElementById('globalFactoryFilter').value, q = (document.getElementById('mSearch').value || '').trim().toLowerCase();
       const rows = APP.gatePasses.filter(g => (!fac || !g.factory || g.factory === fac) && (APP.mTab === 'IN' ? g.direction === 'IN' : APP.mTab === 'OUT' ? g.direction === 'OUT' : APP.mTab === 'PENDING_RET' ? (g.isReturnable && !g.returnedAt) : APP.mTab === 'OVERDUE' ? g.overdue : APP.mTab === 'RETURNED' ? Boolean(g.returnedAt) : true) && (!q || `${g.id} ${g.materialName} ${g.partyName} ${g.challanNo} ${g.vehicleNo} ${g.forName} ${g.department}`.toLowerCase().includes(q)));
       document.getElementById('mTableBody').innerHTML = rows.length ? rows.map(g => {
-        const matImgs = (g.materialPhotos || []).map(u => `<img class="thumb-mini" src="${esc(u)}" onclick="openPhotoPreview('${esc(u)}')">`).join('');
-        const billImgs = (g.billPhotos || []).map(u => `<img class="thumb-mini" src="${esc(u)}" onclick="openPhotoPreview('${esc(u)}')">`).join('');
+        const matImgs = (g.materialPhotos || []).map(u => mediaThumbHtml(u)).join('');
+        const billImgs = (g.billPhotos || []).map(u => mediaThumbHtml(u)).join('');
+        const gpActions = [];
+        if (g.isReturnable && !g.returnedAt) gpActions.push(`<button class="btn btn-primary" onclick="markMaterialReturned('${esc(g.id)}')">✓ Mark Returned</button>`);
+        if (isAdmin()) gpActions.push(`<button class="btn btn-danger" onclick="deleteGatePass('${esc(g.id)}')">🗑 Delete</button>`);
         return `<tr>
           <td><b>${esc(g.id)}</b><br><span class="badge ${g.direction==='IN'?'b-approved':'b-pending'}">${esc(g.direction)}</span></td>
           <td><b>${esc(g.materialName)}</b><br><span style="font-size:12px;color:var(--muted)">Qty: ${esc(g.quantity)} ${esc(g.unit)}</span></td>
           <td>${esc(g.partyName || '-')}<br><span style="font-size:12px;color:var(--muted)">Challan: ${esc(g.challanNo || '-')} · Veh: ${esc(g.vehicleNo || '-')}</span></td>
           <td><b>${esc(g.forName || 'Whole Dept')}</b><br><span style="font-size:12px;color:var(--muted)">${esc(g.department || '-')} · ${esc(g.factory || '-')}</span></td>
-          <td><div class="thumb-row">${matImgs}${billImgs}</div></td>
+          <td>${matImgs || billImgs ? `<div class="thumb-row">${matImgs}${billImgs}</div>` : '<span style="color:var(--muted);font-size:12px">—</span>'}</td>
           <td>${g.isReturnable ? (g.returnedAt ? '<span class="badge b-approved">✓ Returned</span>' : (g.overdue ? `<span class="badge b-overdue">⚠ OVERDUE (${g.expectedDays}d)</span>` : `<span class="badge b-pending">⏳ Due ${new Date(g.expectedReturnAt).toLocaleDateString()}</span>`)) : '<span style="font-size:12px;color:var(--muted)">Non-Returnable</span>'}</td>
-          <td>${g.isReturnable && !g.returnedAt ? `<button class="btn btn-primary" onclick="markMaterialReturned('${esc(g.id)}')">✓ Mark Returned</button>` : '<span style="font-size:12px;color:var(--muted)">Closed</span>'}</td>
+          <td><div style="display:flex;gap:6px;flex-wrap:wrap">${gpActions.length ? gpActions.join('') : '<span style="font-size:12px;color:var(--muted)">Closed</span>'}</div></td>
         </tr>`;
       }).join('') : '<tr><td colspan="7" style="color:var(--muted)">No matching material gate passes found.</td></tr>';
     }
     async function markMaterialReturned(gid) {
       const note = prompt('Return note (optional):', 'Material received back at gate'); if (note === null) return;
       try { await api(`/api/gate-passes/${encodeURIComponent(gid)}/return`, { method: 'POST', body: JSON.stringify({ note }) }); showToast('Material marked returned!'); await Promise.all([loadGatePasses(), loadNotifs()]); renderCurrentView(); } catch (err) { showToast(err.message, true); }
+    }
+    async function deleteGatePass(gid) {
+      if (!confirm(`Delete material gate pass '${gid}' and its photos/documents permanently?`)) return;
+      try { await api(`/api/gate-passes/${encodeURIComponent(gid)}`, { method: 'DELETE' }); showToast('Material gate pass deleted'); await Promise.all([loadGatePasses(), loadNotifs()]); renderCurrentView(); } catch (err) { showToast(err.message, true); }
     }
     function openNewMaterialModal() {
       APP.modalPhotos = { a: [], b: [] }; const defDays = APP.settings.default_returnable_days || 7;
@@ -1081,15 +1125,76 @@
       document.getElementById('notifInboxPane').classList.toggle('hidden', !isInbox); document.getElementById('notifSoundsPane').classList.toggle('hidden', isInbox);
       renderNotifications();
     }
+    function groupNotifications(list = []) {
+      const map = new Map();
+      const ordered = [];
+      for (const n of list) {
+        const key = n.targetId ? `${n.targetView || 'visitors'}::${n.targetId}` : `id::${n.id}`;
+        let g = map.get(key);
+        if (!g) {
+          g = { key, targetId: n.targetId || '', targetView: n.targetView || 'visitors', latest: n, items: [], unreadCount: 0 };
+          map.set(key, g);
+          ordered.push(g);
+        }
+        g.items.push(n);
+        if (new Date(n.ts).getTime() >= new Date(g.latest.ts).getTime()) g.latest = n;
+        if (!n.read) g.unreadCount += 1;
+      }
+      ordered.forEach(g => { g.items.sort((a, b) => new Date(a.ts) - new Date(b.ts)); });
+      ordered.sort((a, b) => new Date(b.latest.ts) - new Date(a.ts));
+      return ordered;
+    }
+    function toggleNotifGroup(key) {
+      APP.expandedNotifGroups[key] = !APP.expandedNotifGroups[key];
+      renderNotifications();
+    }
     function renderNotifications() {
-      const unread = APP.notifications.filter(n => !n.read).length;
-      document.getElementById('notifCountText').textContent = `${unread} unread of ${APP.notifications.length} targeted alerts`;
-      document.getElementById('notifInboxList').innerHTML = APP.notifications.length ? APP.notifications.map(n => `
-        <div style="padding:12px;border:1px solid var(--border);border-radius:12px;margin-bottom:8px;background:${n.read ? '#fff' : '#f2faf6'};display:flex;justify-content:space-between;gap:10px;align-items:flex-start">
-          <div><div style="font-weight:800;font-size:13.5px">${n.read ? '' : '🟢 '}${esc(n.title)}</div><div style="font-size:12.5px;color:var(--muted);margin-top:3px">${esc(n.body)}</div><div style="font-size:11px;color:var(--muted);margin-top:4px">${new Date(n.ts).toLocaleString()}</div></div>
-          <div style="display:flex;gap:6px;flex-shrink:0"><button class="btn" onclick="switchView('${esc(n.targetView || 'visitors')}')">Open →</button>${!n.read ? `<button class="btn btn-soft" onclick="markOneNotifRead('${esc(n.id)}')">✓ Read</button>` : ''}</div>
-        </div>
-      `).join('') : '<p style="color:var(--muted)">No notifications targeted to you yet.</p>';
+      const groups = groupNotifications(APP.notifications);
+      const unreadGroups = groups.filter(g => g.unreadCount > 0).length;
+      const unreadEvents = APP.notifications.filter(n => !n.read).length;
+      document.getElementById('notifCountText').textContent = groups.length
+        ? `${unreadGroups} unread of ${groups.length} grouped pass${groups.length === 1 ? '' : 'es'} (${unreadEvents} total updates)`
+        : '0 unread targeted alerts';
+      document.getElementById('notifInboxList').innerHTML = groups.length ? groups.map(g => {
+        const n = g.latest;
+        const multi = g.items.length > 1;
+        const isOpen = Boolean(APP.expandedNotifGroups[g.key]);
+        const hasUnread = g.unreadCount > 0;
+        const trailBadge = multi ? `<span class="badge ${isOpen ? 'b-approved' : 'b-checkedin'}" style="margin-left:4px">${isOpen ? `▾ Hide ${g.items.length} trails` : `▸ ${g.items.length} trails`}</span>` : '';
+        const subHtml = (multi && isOpen) ? `
+          <div class="notif-sublist" onclick="event.stopPropagation()">
+            ${g.items.map((item, idx) => `
+              <div class="notif-subbox ${item.read ? '' : 'unread'}">
+                <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start;flex-wrap:wrap">
+                  <div style="flex:1;min-width:170px">
+                    <div style="font-weight:700;font-size:12.5px"><span class="badge b-checkedout" style="margin-right:4px">Step ${idx + 1}</span>${item.read ? '' : '🟢 '}${esc(item.title)}</div>
+                    <div style="font-size:12px;color:var(--muted);margin-top:2px">${esc(item.body)}</div>
+                    <div style="font-size:11px;color:var(--muted);margin-top:2px">${new Date(item.ts).toLocaleString()}</div>
+                  </div>
+                  ${!item.read ? `<button type="button" class="btn btn-soft" style="padding:4px 8px;font-size:11px" onclick="markOneNotifRead('${esc(item.id)}')">✓ Read</button>` : '<span style="font-size:11px;color:var(--muted)">✓ Read</span>'}
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        ` : '';
+        return `
+          <div class="notif-group ${hasUnread ? 'unread' : ''} ${multi ? 'expandable' : ''}" data-notif-group="${esc(g.key)}" ${multi ? `onclick="toggleNotifGroup('${esc(g.key)}')"` : ''}>
+            <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start;flex-wrap:wrap">
+              <div style="flex:1;min-width:200px">
+                <div style="font-weight:800;font-size:13.5px;line-height:1.35">${hasUnread ? '🟢 ' : ''}${esc(n.title)} ${trailBadge}</div>
+                <div style="font-size:12.5px;color:var(--muted);margin-top:3px">${esc(n.body)}</div>
+                <div style="font-size:11px;color:var(--muted);margin-top:4px">${new Date(n.ts).toLocaleString()}${multi && !isOpen ? ' · Click box to view all ' + g.items.length + ' trails' : ''}</div>
+              </div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap;flex-shrink:0" onclick="event.stopPropagation()">
+                ${multi ? `<button type="button" class="btn" onclick="toggleNotifGroup('${esc(g.key)}')">${isOpen ? '▾ Collapse' : `▸ ${g.items.length} Trails`}</button>` : ''}
+                <button type="button" class="btn" onclick="switchView('${esc(g.targetView || 'visitors')}')">Open →</button>
+                ${hasUnread ? `<button type="button" class="btn btn-soft" onclick="markNotifGroupRead('${esc(g.key)}')">✓ Read${g.unreadCount > 1 ? ` (${g.unreadCount})` : ''}</button>` : ''}
+              </div>
+            </div>
+            ${subHtml}
+          </div>
+        `;
+      }).join('') : '<p style="color:var(--muted)">No notifications targeted to you yet.</p>';
       const cfg = effectiveSoundPrefs();
       document.getElementById('sndMasterEnabled').checked = cfg.enabled !== false;
       document.getElementById('sndDesktopEnabled').checked = cfg.desktop_notifications !== false;
@@ -1106,6 +1211,13 @@
       }).join('');
     }
     async function markOneNotifRead(id) { await api('/api/notifications/history', { method: 'POST', body: JSON.stringify({ id }) }); await loadNotifs(); renderNotifications(); }
+    async function markNotifGroupRead(key) {
+      const grp = groupNotifications(APP.notifications).find(g => g.key === key);
+      const ids = grp ? grp.items.filter(x => !x.read).map(x => x.id) : [];
+      if (!ids.length) return;
+      await api('/api/notifications/history', { method: 'POST', body: JSON.stringify({ ids }) });
+      await loadNotifs(); renderNotifications();
+    }
     async function markAllNotifsRead() { await api('/api/notifications/history', { method: 'POST', body: JSON.stringify({ action: 'read_all' }) }); await loadNotifs(); renderNotifications(); }
     function updateSoundCat(key, prop, val) { const c = Object.assign({ enabled: true, silent: false, sound: 'chime' }, effectiveSoundPrefs()[key] || {}); c[prop] = val; APP.userNotifPrefs[key] = c; saveSoundConfig(false); renderNotifications(); }
     async function requestDesktopAndSave() { if (document.getElementById('sndDesktopEnabled').checked && 'Notification' in window && Notification.permission === 'default') try { await Notification.requestPermission(); } catch (_) {} await saveSoundConfig(false); }
@@ -1157,7 +1269,7 @@
       document.getElementById('usersQuotaLabel').textContent = `Active Quota: ${(APP.users || []).length} / ${APP.org?.maxUsers || 100} users (${APP.org?.planName || 'Standard'} Plan)`;
       const q = (document.getElementById('uSearch').value || '').toLowerCase();
       document.getElementById('uTableBody').innerHTML = (APP.users || []).filter(u => !q || `${u.username} ${u.full_name} ${u.dept} ${u.role}`.toLowerCase().includes(q)).map(u => `
-        <tr><td><b>${esc(u.full_name)}</b><br><span style="font-size:12px;color:var(--muted)">@${esc(u.username)}</span></td><td><b>${esc(u.role)}</b><br><span style="font-size:11.5px;color:var(--muted)">Scope: ${esc(u.gate_scope || 'user')}</span></td><td>${esc(u.dept || '-')}<br><span style="font-size:12px;color:var(--muted)">${esc(u.factory || 'All Factories')}</span></td><td>${u.enabled ? '<span class="badge b-approved">Active</span>' : '<span class="badge b-rejected">Disabled</span>'}</td><td><div style="display:flex;gap:6px"><button class="btn" onclick="openUserModal('${esc(u.username)}')">Edit</button>${u.username !== APP.user?.username ? `<button class="btn btn-danger" onclick="deleteUser('${esc(u.username)}')">Delete</button>` : ''}</div></td></tr>
+        <tr><td><b>${esc(u.full_name)}</b><br><span style="font-size:12px;color:var(--muted)">@${esc(u.username)}</span></td><td><b>${esc(u.role)}</b><br><span style="font-size:11.5px;color:var(--muted)">Scope: ${esc(u.gate_scope || 'user')}</span></td><td>${esc(u.dept || '-')}<br><span style="font-size:12px;color:var(--muted)">${esc(u.factory || 'All Factories')}</span></td><td>${u.enabled ? '<span class="badge b-approved">Active</span>' : '<span class="badge b-rejected">Disabled</span>'}</td><td><div style="display:flex;gap:6px"><button class="btn" onclick="openUserModal('${esc(u.username)}')">Edit</button>${isAdmin() && u.username !== APP.user?.username ? `<button class="btn btn-danger" onclick="deleteUser('${esc(u.username)}')">Delete</button>` : ''}</div></td></tr>
       `).join('');
     }
     function openUserModal(uname) {
@@ -1230,7 +1342,22 @@
       const wrap = document.getElementById('backupListWrap');
       try {
         const res = await api('/api/backups');
-        wrap.innerHTML = `<p style="margin:0"><b>Organization:</b> ${esc(APP.org?.name || '')} (<code>${esc(APP.org?.slug || '')}</code>)<br><b>Stored Records:</b> ${res.counts?.visitors || 0} Visitor Passes · ${res.counts?.gatePasses || 0} Material Passes.</p>`;
+        wrap.innerHTML = `
+          <p style="margin:0 0 12px"><b>Organization:</b> ${esc(APP.org?.name || '')} (<code>${esc(APP.org?.slug || '')}</code>)<br><b>Stored Records:</b> ${res.counts?.visitors || 0} Visitor Passes · ${res.counts?.gatePasses || 0} Material Gate Passes.</p>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px">
+            <div style="border:1px solid var(--border);border-radius:12px;padding:12px;background:var(--surface-soft)">
+              <b>🪪 Visitor Passes Export</b><br><span style="font-size:12px;color:var(--muted)">Includes Selfie &amp; ID Card photos + links</span>
+              <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"><button type="button" class="btn" onclick="exportReport('visitors','xlsx')">📊 Excel (.xlsx)</button><button type="button" class="btn btn-soft" onclick="exportReport('visitors','zip')">📦 Excel + Photos (.zip)</button></div>
+            </div>
+            <div style="border:1px solid var(--border);border-radius:12px;padding:12px;background:var(--surface-soft)">
+              <b>📦 Material Gate Passes Export</b><br><span style="font-size:12px;color:var(--muted)">Includes Material photos, Challan/Bill photos &amp; PDFs</span>
+              <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"><button type="button" class="btn" onclick="exportReport('gatepasses','xlsx')">📊 Excel (.xlsx)</button><button type="button" class="btn btn-soft" onclick="exportReport('gatepasses','zip')">📦 Excel + Files (.zip)</button></div>
+            </div>
+            <div style="border:1px solid var(--border);border-radius:12px;padding:12px;background:var(--surface-soft)">
+              <b>🏢 Complete Company Archive</b><br><span style="font-size:12px;color:var(--muted)">Multi-sheet Excel + full <code>files/</code> media folder</span>
+              <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"><button type="button" class="btn btn-primary" onclick="exportReport('all','xlsx')">📊 Full Excel (.xlsx)</button><button type="button" class="btn btn-soft" onclick="exportReport('all','zip')">📦 Complete ZIP</button></div>
+            </div>
+          </div>`;
       } catch (err) { wrap.innerHTML = `<p style="color:var(--danger)">${esc(err.message)}</p>`; }
     }
 
@@ -1281,7 +1408,7 @@
       const res = await fetch('/api/gate-media', { method: 'POST', body: fd, headers: { 'X-Requested-With': 'ShreeGatePass' }, credentials: 'same-origin' }).then(r => r.json());
       APP.modalPhotos[APP.photoCallbackBucket].push(...(res.urls || (res.url ? [res.url] : [])));
       const box = document.getElementById('modalThumbs-' + APP.photoCallbackBucket);
-      if (box) box.innerHTML = APP.modalPhotos[APP.photoCallbackBucket].map(u => `<img class="thumb-mini" src="${esc(u)}">`).join('');
+      if (box) box.innerHTML = APP.modalPhotos[APP.photoCallbackBucket].map(u => mediaThumbHtml(u)).join('');
     }
     document.getElementById('appCamInput').addEventListener('change', e => { if (e.target.files?.length) uploadModalFiles(e.target.files); });
     document.getElementById('appFileInput').addEventListener('change', e => { if (e.target.files?.length) uploadModalFiles(e.target.files); });

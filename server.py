@@ -5,7 +5,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import io
 import json
+import zipfile
 import os
 import queue
 import re
@@ -25,6 +27,8 @@ from urllib.parse import urlparse
 
 from flask import Flask, Response, jsonify, make_response, request, send_file, send_from_directory
 from werkzeug.security import check_password_hash, generate_password_hash
+
+from xlsx_exporter import build_xlsx_bytes
 
 try:
     import psycopg
@@ -1762,6 +1766,8 @@ def api_save_user(conn, org, user):
 @app.delete("/api/users/<username>")
 @auth_required("users", "rw")
 def api_delete_user(conn, org, user, username):
+    if user.get("role") != "Administrator":
+        return jsonify({"error": "Only Administrators are permitted to delete users"}), 403
     oid = org["id"]
     if username.casefold() == user["username"].casefold():
         return jsonify({"error": "You cannot delete your own active admin account"}), 400
@@ -2395,6 +2401,60 @@ def api_visitor_checkout(conn, org, user, vid):
     return jsonify({"visitor": _serialize_visitor(updated)})
 
 
+def _delete_org_media_urls(org_id: str, urls: list[str]) -> None:
+    """Safely delete uploaded media files belonging strictly to this organization."""
+    safe_org = re.sub(r"[^a-zA-Z0-9_-]", "", org_id) or DEFAULT_ORG_ID
+    media_dir = (UPLOAD_DIR / safe_org / "gate_media").resolve()
+    if not media_dir.exists():
+        return
+    for url in urls:
+        u = str(url or "").strip()
+        m = re.match(r"^/api/(?:public/)?gate-media/([A-Za-z0-9_-]+)/([A-Za-z0-9_.-]+)$", u)
+        if not m or m.group(1) != safe_org:
+            continue
+        target = (media_dir / Path(m.group(2)).name).resolve()
+        if target.parent == media_dir and target.is_file():
+            target.unlink(missing_ok=True)
+
+
+def _resolve_org_media_file(org_id: str, url: str) -> tuple[Path | None, str]:
+    """Resolve a stored media URL under org gate_media to (path, ext)."""
+    safe_org = re.sub(r"[^a-zA-Z0-9_-]", "", org_id) or DEFAULT_ORG_ID
+    m = re.match(r"^/api/(?:public/)?gate-media/([A-Za-z0-9_-]+)/([A-Za-z0-9_.-]+)$", str(url or "").strip())
+    if not m or m.group(1) != safe_org:
+        return None, ""
+    media_dir = (UPLOAD_DIR / safe_org / "gate_media").resolve()
+    target = (media_dir / Path(m.group(2)).name).resolve()
+    if target.parent != media_dir or not target.is_file():
+        return None, ""
+    return target, target.suffix.lower().lstrip(".")
+
+
+@app.delete("/api/visitors/<vid>")
+@auth_required("visitors", "rw")
+def api_delete_visitor(conn, org, user, vid):
+    if user.get("role") != "Administrator":
+        return jsonify({"error": "Only Administrators are permitted to delete visitor passes"}), 403
+    oid = org["id"]
+    with conn.cursor() as cur:
+        cur.execute("SELECT * FROM visitor_passes WHERE id=%s AND org_id=%s", (vid, oid))
+        row = cur.fetchone()
+        if not row:
+            return jsonify({"error": "Visitor pass not found"}), 404
+        urls = [
+            row.get("selfie_photo") or "",
+            row.get("id_card_photo") or "",
+            *(row.get("selfie_photos") or []),
+            *(row.get("id_card_photos") or []),
+        ]
+        cur.execute("DELETE FROM visitor_passes WHERE id=%s AND org_id=%s", (vid, oid))
+        cur.execute("DELETE FROM notification_events WHERE target_id=%s AND org_id=%s", (vid, oid))
+    _delete_org_media_urls(oid, urls)
+    _audit(conn, oid, user["username"], "delete_visitor", f"Deleted visitor pass {vid} ({row.get('visitor_name', '')})")
+    _bump_rev(oid, "visitorRev", "notifRev")
+    return jsonify({"ok": True, "id": vid})
+
+
 @app.post("/api/public/visitors/<vid>/checkin-out")
 def api_public_visitor_kiosk_action(vid):
     ensure_db_ready()
@@ -2730,6 +2790,31 @@ def api_public_return_gate_pass(gid):
     return jsonify({"gatePass": gp})
 
 
+@app.delete("/api/gate-passes/<gid>")
+@auth_required("gatepasses", "rw")
+def api_delete_gate_pass(conn, org, user, gid):
+    if user.get("role") != "Administrator":
+        return jsonify({"error": "Only Administrators are permitted to delete material gate passes"}), 403
+    oid = org["id"]
+    with conn.cursor() as cur:
+        cur.execute("SELECT * FROM material_gate_passes WHERE id=%s AND org_id=%s", (gid, oid))
+        row = cur.fetchone()
+        if not row:
+            return jsonify({"error": "Material gate pass not found"}), 404
+        urls = [
+            row.get("material_photo") or "",
+            row.get("bill_photo") or "",
+            *(row.get("material_photos") or []),
+            *(row.get("bill_photos") or []),
+        ]
+        cur.execute("DELETE FROM material_gate_passes WHERE id=%s AND org_id=%s", (gid, oid))
+        cur.execute("DELETE FROM notification_events WHERE target_id=%s AND org_id=%s", (gid, oid))
+    _delete_org_media_urls(oid, urls)
+    _audit(conn, oid, user["username"], "delete_gatepass", f"Deleted material gate pass {gid} ({row.get('material_name', '')})")
+    _bump_rev(oid, "gatepassRev", "notifRev")
+    return jsonify({"ok": True, "id": gid})
+
+
 @app.post("/api/gate-passes/<gid>/status")
 @auth_required("gatepasses", "rw")
 def api_update_gate_pass_status(conn, org, user, gid):
@@ -2819,7 +2904,7 @@ def _serialize_notif_for_user(row: dict, username: str) -> dict:
 def api_notif_history(conn, org, user):
     oid = org["id"]
     with conn.cursor() as cur:
-        cur.execute("SELECT * FROM notification_events WHERE org_id=%s ORDER BY ts DESC LIMIT 200", (oid,))
+        cur.execute("SELECT * FROM notification_events WHERE org_id=%s ORDER BY ts DESC LIMIT 400", (oid,))
         rows = cur.fetchall()
     visible = [_serialize_notif_for_user(r, user["username"]) for r in rows if event_visible_to_user(r, user)]
     return jsonify({"notifications": visible, "unread": sum(1 for n in visible if not n["read"])})
@@ -2832,10 +2917,24 @@ def api_notif_mark_read(conn, org, user):
     data = request.get_json(silent=True) or {}
     action = str(data.get("action") or "read").lower()
     nid = str(data.get("id") or "").strip()
+    ids = [str(x).strip() for x in (data.get("ids") or []) if str(x).strip()]
+    target_id = str(data.get("targetId") or "").strip()
     uname_cf = user["username"].casefold()
     with conn.cursor() as cur:
-        if action in ("clear_all", "read_all") or not nid:
-            cur.execute("SELECT id, org_id, target_usernames, target_department, factory, meta, read_by FROM notification_events WHERE org_id=%s ORDER BY ts DESC LIMIT 300", (oid,))
+        if ids:
+            cur.execute("SELECT id, org_id, target_usernames, target_department, factory, meta, read_by FROM notification_events WHERE org_id=%s AND id = ANY(%s)", (oid, ids))
+            for row in cur.fetchall():
+                if event_visible_to_user(row, user):
+                    rb = list(dict.fromkeys([*(row.get("read_by") or []), uname_cf]))
+                    cur.execute("UPDATE notification_events SET read_by=%s::jsonb WHERE id=%s AND org_id=%s", (json.dumps(rb), row["id"], oid))
+        elif target_id:
+            cur.execute("SELECT id, org_id, target_usernames, target_department, factory, meta, read_by FROM notification_events WHERE org_id=%s AND target_id=%s", (oid, target_id))
+            for row in cur.fetchall():
+                if event_visible_to_user(row, user):
+                    rb = list(dict.fromkeys([*(row.get("read_by") or []), uname_cf]))
+                    cur.execute("UPDATE notification_events SET read_by=%s::jsonb WHERE id=%s AND org_id=%s", (json.dumps(rb), row["id"], oid))
+        elif action in ("clear_all", "read_all") or not nid:
+            cur.execute("SELECT id, org_id, target_usernames, target_department, factory, meta, read_by FROM notification_events WHERE org_id=%s ORDER BY ts DESC LIMIT 500", (oid,))
             for row in cur.fetchall():
                 if event_visible_to_user(row, user):
                     rb = list(dict.fromkeys([*(row.get("read_by") or []), uname_cf]))
@@ -3067,6 +3166,238 @@ def api_org_export_json(conn, org, user):
     resp = make_response(raw)
     resp.headers["Content-Type"] = "application/json"
     resp.headers["Content-Disposition"] = f'attachment; filename="gatepass-{org["slug"]}-export.json"'
+    return resp
+
+
+def _prepare_export_bundle(
+    conn,
+    org: dict,
+    *,
+    scope: str = "all",
+    factory: str = "",
+    status_filter: str = "",
+    direction_filter: str = "",
+    query_str: str = "",
+    base_origin: str = "",
+    relative_zip_links: bool = False,
+) -> tuple[bytes, list[tuple[str, bytes]]]:
+    """Build Excel workbook + extracted media attachments purely within this organization."""
+    oid = org["id"]
+    bundled_files: list[tuple[str, bytes]] = []
+    sheets: list[dict] = []
+    q_low = query_str.strip().lower()
+
+    def _process_attachments(pass_id: str, label_prefix: str, urls: list[str], img_col_1: int) -> tuple[list[dict], list[tuple[str, str]]]:
+        imgs: list[dict] = []
+        links: list[tuple[str, str]] = []
+        for idx, u in enumerate(urls, start=1):
+            disk_path, ext = _resolve_org_media_file(oid, u)
+            if not disk_path:
+                continue
+            raw_bytes = disk_path.read_bytes()
+            safe_ext = ext or "bin"
+            arc_rel = f"files/{pass_id}_{label_prefix}_{idx}.{safe_ext}"
+            bundled_files.append((arc_rel, raw_bytes))
+            link_url = arc_rel if relative_zip_links else (f"{base_origin}{u}" if base_origin else u)
+            links.append((link_url, f"{pass_id}_{label_prefix}_{idx}.{safe_ext}"))
+            if not imgs and safe_ext in ("jpg", "jpeg", "png"):
+                imgs.append({"col_1": img_col_1, "bytes": raw_bytes, "ext": safe_ext})
+        return imgs, links
+
+    if scope in ("all", "visitors"):
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM visitor_passes WHERE org_id=%s ORDER BY entry_time DESC", (oid,))
+            v_items = [_serialize_visitor(r) for r in (cur.fetchall() or [])]
+        if factory:
+            v_items = [v for v in v_items if not v["factory"] or v["factory"].casefold() == factory.casefold()]
+        if status_filter and status_filter != "all":
+            v_items = [v for v in v_items if v["status"].casefold() == status_filter.casefold()]
+        if q_low:
+            v_items = [
+                v for v in v_items
+                if q_low in f"{v['id']} {v['visitorName']} {v['phone']} {v['company']} {v['hostName']} {v['department']}".lower()
+            ]
+
+        v_rows = []
+        for v in v_items:
+            s_imgs, s_links = _process_attachments(v["id"], "selfie", v.get("selfiePhotos") or [], 15)
+            id_imgs, id_links = _process_attachments(v["id"], "idcard", v.get("idCardPhotos") or [], 16)
+            all_links = [*s_links, *id_links]
+            row_imgs = [*s_imgs, *id_imgs]
+            link_cell_1 = {"hyperlink": all_links[0][0], "label": all_links[0][1]} if len(all_links) >= 1 else ""
+            link_cell_2 = {"hyperlink": all_links[1][0], "label": all_links[1][1]} if len(all_links) >= 2 else ""
+            extra_summary = ", ".join(lbl for _, lbl in all_links) if all_links else "No photos"
+            v_rows.append(
+                {
+                    "cells": [
+                        v["id"],
+                        v["status"],
+                        v["entryTime"],
+                        v["visitorName"],
+                        v["phone"],
+                        v["company"],
+                        v["purpose"],
+                        v["vehicleNo"],
+                        v["factory"],
+                        v["department"],
+                        v["hostName"] or v["hostUsername"] or "Whole Dept",
+                        f"{v['approvedBy']} ({v['approvedAt']})" if v["approvedBy"] else "",
+                        f"{v['checkedInBy']} ({v['checkedInAt']})" if v["checkedInAt"] else "",
+                        f"{v['checkedOutBy']} ({v['checkedOutAt']})" if v["checkedOutAt"] else "",
+                        "" if s_imgs else ("No photo" if not s_links else s_links[0][1]),
+                        "" if id_imgs else ("No photo" if not id_links else id_links[0][1]),
+                        link_cell_1,
+                        link_cell_2,
+                        extra_summary,
+                    ],
+                    "images": row_imgs,
+                }
+            )
+        sheets.append(
+            {
+                "name": "Visitor Passes",
+                "headers": [
+                    "Pass ID", "Status", "Entry Time", "Visitor Name", "Phone", "Company", "Purpose",
+                    "Vehicle No", "Factory", "Department", "Whom to Meet", "Approved By / Time",
+                    "Checked In By / Time", "Checked Out By / Time",
+                    "Selfie Photo", "ID Card Photo", "Photo/Doc Link 1", "Photo/Doc Link 2", "All Files",
+                ],
+                "col_widths": [20, 14, 22, 22, 15, 20, 22, 15, 13, 16, 20, 26, 26, 26, 16, 16, 26, 26, 30],
+                "rows": v_rows,
+            }
+        )
+
+    if scope in ("all", "gatepasses"):
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM material_gate_passes WHERE org_id=%s ORDER BY entry_time DESC", (oid,))
+            g_items = [_serialize_gatepass(r) for r in (cur.fetchall() or [])]
+        if factory:
+            g_items = [g for g in g_items if not g["factory"] or g["factory"].casefold() == factory.casefold()]
+        if direction_filter in ("IN", "OUT"):
+            g_items = [g for g in g_items if g["direction"] == direction_filter]
+        elif status_filter == "IN":
+            g_items = [g for g in g_items if g["direction"] == "IN"]
+        elif status_filter == "OUT":
+            g_items = [g for g in g_items if g["direction"] == "OUT"]
+        elif status_filter == "PENDING_RET":
+            g_items = [g for g in g_items if g["isReturnable"] and not g["returnedAt"]]
+        elif status_filter == "OVERDUE":
+            g_items = [g for g in g_items if g["overdue"]]
+        elif status_filter == "RETURNED":
+            g_items = [g for g in g_items if g["returnedAt"]]
+        if q_low:
+            g_items = [
+                g for g in g_items
+                if q_low in f"{g['id']} {g['materialName']} {g['partyName']} {g['challanNo']} {g['vehicleNo']} {g['forName']} {g['department']}".lower()
+            ]
+
+        g_rows = []
+        for g in g_items:
+            m_imgs, m_links = _process_attachments(g["id"], "material", g.get("materialPhotos") or [], 19)
+            b_imgs, b_links = _process_attachments(g["id"], "billdoc", g.get("billPhotos") or [], 20)
+            all_links = [*m_links, *b_links]
+            row_imgs = [*m_imgs, *b_imgs]
+            link_cell_1 = {"hyperlink": all_links[0][0], "label": all_links[0][1]} if len(all_links) >= 1 else ""
+            link_cell_2 = {"hyperlink": all_links[1][0], "label": all_links[1][1]} if len(all_links) >= 2 else ""
+            extra_summary = ", ".join(lbl for _, lbl in all_links) if all_links else "No files"
+            g_rows.append(
+                {
+                    "cells": [
+                        g["id"],
+                        g["direction"],
+                        g["entryTime"],
+                        g["status"],
+                        g["materialName"],
+                        g["quantity"],
+                        g["unit"],
+                        g["partyName"],
+                        g["challanNo"],
+                        g["vehicleNo"],
+                        g["driverName"],
+                        g["factory"],
+                        g["department"],
+                        g["forName"] or g["forUsername"] or "Whole Dept",
+                        "Yes" if g["isReturnable"] else "No",
+                        str(g["expectedDays"] or ""),
+                        g["expectedReturnAt"],
+                        g["returnedAt"],
+                        "" if m_imgs else ("No photo" if not m_links else m_links[0][1]),
+                        "" if b_imgs else ("No doc" if not b_links else b_links[0][1]),
+                        link_cell_1,
+                        link_cell_2,
+                        extra_summary,
+                    ],
+                    "images": row_imgs,
+                }
+            )
+        sheets.append(
+            {
+                "name": "Material Gate Passes",
+                "headers": [
+                    "Pass ID", "Dir", "Entry Time", "Status", "Material Name", "Qty", "Unit",
+                    "Party Name", "Challan No", "Vehicle No", "Driver", "Factory", "Department",
+                    "Recipient", "Returnable", "Expected Days", "Due Date", "Returned At",
+                    "Material Photo", "Bill / Challan", "Document/Photo 1", "Document/Photo 2", "All Files",
+                ],
+                "col_widths": [22, 8, 22, 16, 26, 9, 9, 22, 16, 15, 16, 13, 16, 20, 11, 13, 20, 20, 16, 16, 26, 26, 30],
+                "rows": g_rows,
+            }
+        )
+
+    xlsx_bytes = build_xlsx_bytes(sheets)
+    return xlsx_bytes, bundled_files
+
+
+@app.get("/api/export/excel")
+@auth_required()
+def api_export_excel_or_bundle(conn, org, user):
+    scope = str(request.args.get("scope") or "all").lower()
+    if scope not in ("all", "visitors", "gatepasses"):
+        scope = "all"
+    if user["role"] != "Administrator":
+        if scope in ("all", "visitors") and user["perms"].get("visitors", "none") == "none":
+            return jsonify({"error": "Insufficient permission to export Visitor Passes"}), 403
+        if scope in ("all", "gatepasses") and user["perms"].get("gatepasses", "none") == "none":
+            return jsonify({"error": "Insufficient permission to export Material Gate Passes"}), 403
+
+    fmt = str(request.args.get("format") or "xlsx").lower()
+    factory = str(request.args.get("factory") or "").strip()
+    status_f = str(request.args.get("status") or "").strip()
+    dir_f = str(request.args.get("direction") or "").strip().upper()
+    q_str = str(request.args.get("q") or "").strip()
+
+    proto = request.headers.get("X-Forwarded-Proto") or request.scheme or "https"
+    host = request.headers.get("X-Forwarded-Host") or request.host
+    origin = f"{proto}://{host}"
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
+    slug = org["slug"]
+
+    xlsx_bytes, files = _prepare_export_bundle(
+        conn,
+        org,
+        scope=scope,
+        factory=factory,
+        status_filter=status_f,
+        direction_filter=dir_f,
+        query_str=q_str,
+        base_origin=origin,
+        relative_zip_links=(fmt == "zip"),
+    )
+
+    if fmt == "zip":
+        zbuf = io.BytesIO()
+        with zipfile.ZipFile(zbuf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(f"Shree-GatePass-{slug}-{scope}-{stamp}.xlsx", xlsx_bytes)
+            for arc_rel, fbytes in files:
+                zf.writestr(arc_rel, fbytes)
+        resp = make_response(zbuf.getvalue())
+        resp.headers["Content-Type"] = "application/zip"
+        resp.headers["Content-Disposition"] = f'attachment; filename="Shree-GatePass-{slug}-{scope}-With-Photos-{stamp}.zip"'
+        return resp
+
+    resp = make_response(xlsx_bytes)
+    resp.headers["Content-Type"] = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    resp.headers["Content-Disposition"] = f'attachment; filename="Shree-GatePass-{slug}-{scope}-{stamp}.xlsx"'
     return resp
 
 
