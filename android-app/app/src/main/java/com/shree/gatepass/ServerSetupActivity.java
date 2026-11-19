@@ -34,11 +34,15 @@ public class ServerSetupActivity extends Activity {
             Toast.makeText(this, "Enter server URL", Toast.LENGTH_SHORT).show();
             return;
         }
-        if (!raw.startsWith("http://") && !raw.startsWith("https://")) {
-            raw = raw.endsWith(":8858") ? ("http://" + raw) : ("https://" + raw);
-        }
         while (raw.endsWith("/")) {
             raw = raw.substring(0, raw.length() - 1);
+        }
+        if (!raw.startsWith("http://") && !raw.startsWith("https://")) {
+            raw = (raw.contains(":8858") || raw.contains(":80")) ? ("http://" + raw) : ("https://" + raw);
+        } else if (raw.startsWith("https://") && raw.matches("^https://[^/]+:8858(/.*)?$")) {
+            raw = "http://" + raw.substring(8);
+        } else if (raw.startsWith("http://") && raw.matches("^http://[^/]+:8859(/.*)?$")) {
+            raw = "https://" + raw.substring(7);
         }
         Uri uri = Uri.parse(raw);
         if (uri == null || uri.getHost() == null || uri.getHost().isEmpty()) {
@@ -49,6 +53,7 @@ public class ServerSetupActivity extends Activity {
         CertPinStore.setBgAlertsEnabled(this, bgAlertsCheck.isChecked());
 
         Intent i = new Intent(this, MainActivity.class);
+        i.putExtra("reload_url", true);
         i.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_NEW_TASK);
         startActivity(i);
         finish();

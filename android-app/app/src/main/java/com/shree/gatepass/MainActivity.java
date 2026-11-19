@@ -73,6 +73,7 @@ public class MainActivity extends Activity {
     private boolean sslDialogShowing = false;
     private final List<SslErrorHandler> pendingSslHandlers = new ArrayList<>();
     private String configuredHost = "";
+    private String currentServerUrl = "";
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -86,6 +87,7 @@ public class MainActivity extends Activity {
             return;
         }
 
+        currentServerUrl = serverUrl;
         Uri parsed = Uri.parse(serverUrl);
         configuredHost = parsed != null && parsed.getHost() != null ? parsed.getHost() : "";
 
@@ -97,16 +99,26 @@ public class MainActivity extends Activity {
         Button retryBtn = findViewById(R.id.retryBtn);
         Button changeServerBtn = findViewById(R.id.changeServerBtn);
 
-        retryBtn.setOnClickListener(v -> {
-            errorView.setVisibility(View.GONE);
-            webView.setVisibility(View.VISIBLE);
-            webView.reload();
-        });
+        retryBtn.setOnClickListener(v -> loadFreshServerUrl());
         changeServerBtn.setOnClickListener(v -> startActivity(new Intent(this, ServerSetupActivity.class)));
 
         NotificationHelper.ensureChannels(this);
         requestStartupPermissionsIfNeeded();
         setupWebView(serverUrl);
+    }
+
+    private void loadFreshServerUrl() {
+        String latest = CertPinStore.getServerUrl(this);
+        if (latest.isEmpty()) {
+            startActivity(new Intent(this, ServerSetupActivity.class));
+            return;
+        }
+        currentServerUrl = latest;
+        Uri parsed = Uri.parse(latest);
+        configuredHost = parsed != null && parsed.getHost() != null ? parsed.getHost() : "";
+        errorView.setVisibility(View.GONE);
+        webView.setVisibility(View.VISIBLE);
+        webView.loadUrl(latest);
     }
 
     private void requestStartupPermissionsIfNeeded() {
@@ -187,7 +199,8 @@ public class MainActivity extends Activity {
                     webView.setVisibility(View.GONE);
                     errorView.setVisibility(View.VISIBLE);
                     if (error != null && Build.VERSION.SDK_INT >= 23 && error.getDescription() != null) {
-                        errorDetailText.setText("Server: " + initialUrl + "\nError: " + error.getDescription());
+                        String failedUrl = request.getUrl() != null ? request.getUrl().toString() : currentServerUrl;
+                        errorDetailText.setText("Server: " + failedUrl + "\nError: " + error.getDescription());
                     }
                 }
             }
@@ -334,6 +347,16 @@ public class MainActivity extends Activity {
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
+        if (intent != null && intent.getBooleanExtra("reload_url", false)) {
+            intent.removeExtra("reload_url");
+            loadFreshServerUrl();
+            return;
+        }
+        String latest = CertPinStore.getServerUrl(this);
+        if (!latest.isEmpty() && !latest.equals(currentServerUrl)) {
+            loadFreshServerUrl();
+            return;
+        }
         handleDeepLinkIntent(intent);
     }
 
