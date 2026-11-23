@@ -335,10 +335,16 @@ public class MainActivity extends Activity {
     private void handleDeepLinkIntent(Intent intent) {
         if (intent == null || webView == null) return;
         String targetView = intent.getStringExtra("targetView");
+        String replyVisitor = intent.getStringExtra("replyVisitor");
         if (targetView != null && !targetView.isEmpty()) {
             intent.removeExtra("targetView");
             intent.removeExtra("targetId");
             String js = "if(typeof window.switchView==='function'){window.switchView(" + JSONObject.quote(targetView) + ");}";
+            webView.evaluateJavascript(js, null);
+        }
+        if (replyVisitor != null && !replyVisitor.isEmpty()) {
+            intent.removeExtra("replyVisitor");
+            String js = "if(typeof window.openStayResponseModal==='function'){window.openStayResponseModal(" + JSONObject.quote(replyVisitor) + ");}";
             webView.evaluateJavascript(js, null);
         }
     }
@@ -584,6 +590,11 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void notify(String title, String body, String targetView, String targetId) {
             NotificationHelper.showAlert(MainActivity.this, title, body, targetView, targetId);
+        }
+
+        @JavascriptInterface
+        public void notifyWithKind(String title, String body, String targetView, String targetId, String kind) {
+            NotificationHelper.showAlert(MainActivity.this, title, body, targetView, targetId, kind);
         }
 
         @JavascriptInterface

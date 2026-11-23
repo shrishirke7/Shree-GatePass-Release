@@ -51,6 +51,10 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <receiver
+            android:name=".NotificationReplyReceiver"
+            android:exported="false" />
+
         <provider
             android:name=".PhotoContentProvider"
             android:authorities="${applicationId}.photoprovider"

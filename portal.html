@@ -237,7 +237,22 @@
               <div class="field"><label for="vCompany">Company / City</label><input id="vCompany" placeholder="Company or native place"></div>
               <div class="field"><label for="vPurpose">Purpose of Visit *</label><input id="vPurpose" required placeholder="Meeting / Delivery / Service"></div>
               <div class="field"><label for="vVehicle">Vehicle No</label><input id="vVehicle" placeholder="e.g. MH-12-AB-1234"></div>
-              <div class="field"><label for="vNotes">Gate Notes</label><input id="vNotes" placeholder="Pass count / items carried"></div>
+              <div class="field">
+                <label for="vDuration">Expected Visit Duration *</label>
+                <div style="display:flex;gap:6px">
+                  <select id="vDuration" onchange="toggleVisitorDurationCustom()">
+                    <option value="30">30 Minutes (Half Hour)</option>
+                    <option value="60" selected>1 Hour</option>
+                    <option value="120">2 Hours</option>
+                    <option value="180">3 Hours</option>
+                    <option value="240">4 Hours</option>
+                    <option value="480">Full Day (8 Hours)</option>
+                    <option value="custom">Custom (Minutes)</option>
+                  </select>
+                  <input id="vDurationCustom" type="number" min="5" max="1440" value="45" class="hidden" style="width:105px" placeholder="Mins">
+                </div>
+              </div>
+              <div class="field full"><label for="vNotes">Gate Notes</label><input id="vNotes" placeholder="Pass count / items carried"></div>
 
               <div class="field">
                 <label>Visitor Selfie / Face Photos</label>
@@ -479,9 +494,26 @@
     document.getElementById('hiddenCamInput').addEventListener('change', e => { if (e.target.files?.length) uploadFilesToServer(e.target.files, STATE.activeCaptureBucket); });
     document.getElementById('hiddenFileInput').addEventListener('change', e => { if (e.target.files?.length) uploadFilesToServer(e.target.files, STATE.activeCaptureBucket); });
 
+    function toggleVisitorDurationCustom() {
+      const sel = document.getElementById('vDuration');
+      const cust = document.getElementById('vDurationCustom');
+      if (cust && sel) cust.classList.toggle('hidden', sel.value !== 'custom');
+    }
+    function getVisitorDurationPayload() {
+      const sel = document.getElementById('vDuration');
+      if (!sel) return { expectedDurationMinutes: 60, expectedDurationLabel: '1 Hour' };
+      if (sel.value === 'custom') {
+        const m = Math.max(5, Math.min(1440, parseInt(document.getElementById('vDurationCustom')?.value || '45', 10) || 45));
+        return { expectedDurationMinutes: m, expectedDurationLabel: '' };
+      }
+      const m = parseInt(sel.value || '60', 10) || 60;
+      const lbl = sel.options[sel.selectedIndex]?.textContent || '';
+      return { expectedDurationMinutes: m, expectedDurationLabel: lbl };
+    }
     async function submitVisitor(e) {
       e.preventDefault();
       const btn = document.getElementById('vSubmitBtn'), hostSel = document.getElementById('vHost'), hostOpt = hostSel.options[hostSel.selectedIndex];
+      const dur = getVisitorDurationPayload();
       btn.disabled = true; btn.textContent = 'Sending request…';
       try {
         const r = await fetch('/api/public/visitors', {
@@ -498,12 +530,14 @@
             purpose: document.getElementById('vPurpose').value.trim(),
             vehicleNo: document.getElementById('vVehicle').value.trim(),
             notes: document.getElementById('vNotes').value.trim(),
+            expectedDurationMinutes: dur.expectedDurationMinutes,
+            expectedDurationLabel: dur.expectedDurationLabel,
             selfiePhotos: STATE.photos.vSelfie, idCardPhotos: STATE.photos.vId,
           }),
         });
         const body = await r.json();
         if (!r.ok) throw new Error(body.error || 'Could not submit visitor entry');
-        e.target.reset(); STATE.photos.vSelfie = []; STATE.photos.vId = [];
+        e.target.reset(); toggleVisitorDurationCustom(); STATE.photos.vSelfie = []; STATE.photos.vId = [];
         renderThumbStrip('vSelfie'); renderThumbStrip('vId'); refreshHostsOnly('v');
         showToast('Visitor pass sent! Targeted alert delivered.');
         await loadQueues();
@@ -576,12 +610,21 @@
     function renderQueues() {
       if (STATE.portalModules.visitor) {
         const vList = STATE.visitors.filter(v => STATE.vFilter === 'all' || v.status === STATE.vFilter);
-        document.getElementById('vQueueList').innerHTML = vList.length ? vList.map(v => `
+        document.getElementById('vQueueList').innerHTML = vList.length ? vList.map(v => {
+          const durTxt = v.expectedDurationLabel ? ` · ⏱ ${esc(v.expectedDurationLabel)}` : '';
+          const gateTxt = (v.status === 'Approved' && v.totalGateCount > 1)
+            ? `<br><span style="color:var(--accent-dark);font-weight:700">🛡 Gate ${v.completedGateCount}/${v.totalGateCount}${v.nextGateLayer ? ` · Next: ${esc(v.nextGateLayer.name)}` : ''}</span>`
+            : '';
+          const stayBadge = v.isOverstay
+            ? ' <span class="badge b-overdue">⚠ Time Elapsed</span>'
+            : (v.checkoutType ? ` <span class="badge b-checkedout">${esc(v.checkoutType)}</span>` : '');
+          return `
           <div class="q-item"><div class="q-top"><div>
             <div class="q-name">${esc(v.visitorName)} <span style="font-weight:600;color:var(--muted);font-size:12px">(${esc(v.id)})</span></div>
-            <div class="q-meta">${esc(v.company || 'Visitor')} · 📞 ${esc(v.phone || '-')}<br>Meet: <b>${esc(v.hostName || v.department || 'Plant')}</b> (${esc(v.department || 'General')}) · ${esc(v.factory || 'Gate')}<br>Entry: ${new Date(v.entryTime).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}${v.approvedBy ? ` · Approved by <b>${esc(v.approvedBy)}</b>` : ''}</div>
-          </div><div style="text-align:right">${statusBadge(v.status)}${(v.status === 'Approved' || v.status === 'Checked In') ? `<div style="margin-top:8px"><button type="button" class="mini-btn" onclick="kioskVisitorAction('${esc(v.id)}','checkout')">🚪 Check Out</button></div>` : ''}</div></div></div>
-        `).join('') : '<div class="q-meta">No visitor passes in this view yet.</div>';
+            <div class="q-meta">${esc(v.company || 'Visitor')} · 📞 ${esc(v.phone || '-')}${durTxt}<br>Meet: <b>${esc(v.hostName || v.department || 'Plant')}</b> (${esc(v.department || 'General')}) · ${esc(v.factory || 'Gate')}<br>Entry: ${new Date(v.entryTime).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}${v.approvedBy ? ` · Approved by <b>${esc(v.approvedBy)}</b>` : ''}${gateTxt}</div>
+          </div><div style="text-align:right">${statusBadge(v.status)}${stayBadge}${(v.status === 'Approved' || v.status === 'Checked In') ? `<div style="margin-top:8px"><button type="button" class="mini-btn" onclick="kioskVisitorAction('${esc(v.id)}','checkout')">🚪 Check Out</button></div>` : ''}</div></div></div>
+        `;
+        }).join('') : '<div class="q-meta">No visitor passes in this view yet.</div>';
       }
 
       if (STATE.portalModules.material) {

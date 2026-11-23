@@ -340,6 +340,7 @@
       </header>
 
       <main class="content">
+        <div id="liveStayBanner" class="hidden" style="margin-bottom:14px"></div>
         <section id="view-no-access" class="view-pane hidden">
           <div class="card" style="max-width:520px;margin:24px auto;text-align:center;padding:28px 18px">
             <h2 style="margin:0 0 8px">No Modules Assigned</h2>
@@ -454,7 +455,7 @@
         </section>
 
         <section id="view-settings" class="view-pane hidden">
-          <div class="page-hd"><div><h1>Organization Settings &amp; Branding</h1><p>Customize company name, configure without-login Gate Kiosk modules, upload your custom logo &amp; copy dedicated gate URLs.</p></div></div>
+          <div class="page-hd"><div><h1>Organization Settings &amp; Branding</h1><p>Customize company name, configure without-login Gate Kiosk modules, security check-in layers, upload your custom logo &amp; copy dedicated gate URLs.</p></div></div>
           <div class="grid-2">
             <div class="card">
               <h2 style="margin-top:0;font-size:16px">Company Branding &amp; Gate Links</h2>
@@ -477,18 +478,33 @@
                   <div id="setPortalModuleHint" style="font-size:12px;color:var(--muted);margin-top:8px"></div>
                 </div>
                 <div class="f-group"><label>Default Returnable Days</label><input type="number" min="1" max="365" id="setRetDays"></div>
-                <div class="f-group"><label>Custom Organization Logo</label><div style="display:flex;gap:8px;align-items:center"><input type="file" id="orgLogoFileInput" accept="image/*"><button type="button" id="btnUploadOrgLogo" class="btn" onclick="uploadOrgLogo()">⬆ Upload Logo</button></div></div>
+                <div class="f-group"><label>Visitor Follow-Up Repeat (Minutes)</label><input type="number" min="1" max="240" id="setVisitorFollowupMins" value="15"></div>
+                <div class="f-group full"><label>Custom Organization Logo</label><div style="display:flex;gap:8px;align-items:center"><input type="file" id="orgLogoFileInput" accept="image/*"><button type="button" id="btnUploadOrgLogo" class="btn" onclick="uploadOrgLogo()">⬆ Upload Logo</button></div></div>
                 <div class="f-group full" id="orgLinksBox" style="background:var(--surface-soft);border:1px solid var(--border);border-radius:10px;padding:10px;font-size:12.5px"></div>
               </div>
               <div style="margin-top:14px" id="settingsSaveWrap"><button type="button" class="btn btn-primary" onclick="saveSettings()">Save Settings</button></div>
             </div>
-            <div class="card">
-              <h2 style="margin-top:0;font-size:16px">Change My Password</h2>
-              <div class="form-2">
-                <div class="f-group full"><label>Current Password</label><input type="password" id="ownCurPw"></div>
-                <div class="f-group full"><label>New Password (min 8 chars)</label><input type="password" id="ownNewPw"></div>
+
+            <div style="display:flex;flex-direction:column;gap:14px">
+              <div class="card" style="margin-bottom:0">
+                <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+                  <h2 style="margin:0;font-size:16px">🛡 Security Gate Check-In Layers (Dynamic)</h2>
+                  <button type="button" id="btnAddSecLayer" class="btn btn-soft" onclick="addSecurityLayerRow()">+ Add Layer</button>
+                </div>
+                <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px">Configure sequential security check-in steps (e.g. Layer 1: Main Gate Cabin → Layer 2: Factory Security Gate). Add or remove layers anytime — factory-specific layers apply only to that factory.</p>
+                <div id="securityLayersList" style="display:flex;flex-direction:column;gap:8px"></div>
+                <div id="securityLayersHint" style="font-size:12px;color:var(--accent-dark);margin-top:8px"></div>
+                <div style="margin-top:12px" id="settingsLayersSaveWrap"><button type="button" class="btn btn-primary" onclick="saveSettings()">Save Gate Layers &amp; Settings</button></div>
               </div>
-              <div style="margin-top:14px"><button type="button" class="btn btn-primary" onclick="changeOwnPassword()">Update Password</button></div>
+
+              <div class="card" style="margin-bottom:0">
+                <h2 style="margin-top:0;font-size:16px">Change My Password</h2>
+                <div class="form-2">
+                  <div class="f-group full"><label>Current Password</label><input type="password" id="ownCurPw"></div>
+                  <div class="f-group full"><label>New Password (min 8 chars)</label><input type="password" id="ownNewPw"></div>
+                </div>
+                <div style="margin-top:14px"><button type="button" class="btn btn-primary" onclick="changeOwnPassword()">Update Password</button></div>
+              </div>
             </div>
           </div>
         </section>
@@ -509,6 +525,7 @@
       factories: [], departments: [], users: [], directory: [],
       visitors: [], gatePasses: [], notifications: [],
       soundConfig: {}, userNotifPrefs: {}, settings: {},
+      securityLayersDraft: [],
       currentView: 'dashboard', vTab: 'all', mTab: 'all',
       revisions: {}, modalPhotos: { a: [], b: [] }, photoCallbackBucket: '', sse: null, audioCtx: null,
       expandedNotifGroups: {},
@@ -957,7 +974,7 @@
 
     async function loadVisitors() { APP.visitors = hasPerm('visitors', 'ro') ? ((await api('/api/visitors')).visitors || []) : []; }
     async function loadGatePasses() { APP.gatePasses = hasPerm('gatepasses', 'ro') ? ((await api('/api/gate-passes')).gatePasses || []) : []; }
-    async function loadNotifs() { APP.notifications = hasPerm('notifications', 'ro') ? ((await api('/api/notifications/history')).notifications || []) : []; updateBadges(); }
+    async function loadNotifs() { APP.notifications = hasPerm('notifications', 'ro') ? ((await api('/api/notifications/history')).notifications || []) : []; updateBadges(); renderLiveStayBanner(); }
 
     function updateBadges() {
       const pendingV = hasPerm('visitors', 'ro') ? APP.visitors.filter(v => v.status === 'Pending').length : 0;
@@ -993,6 +1010,7 @@
     function toggleSidebar() { document.getElementById('sidebar').classList.toggle('open'); }
     function renderCurrentView() {
       updateBadges();
+      renderLiveStayBanner();
       if (APP.currentView === 'dashboard') renderDashboard();
       else if (APP.currentView === 'visitors') renderVisitors();
       else if (APP.currentView === 'gatepasses') renderGatePasses();
@@ -1002,6 +1020,31 @@
       else if (APP.currentView === 'factories') renderFactories();
       else if (APP.currentView === 'backups') loadBackupsView();
       else if (APP.currentView === 'settings') renderSettings();
+    }
+
+    function formatMins(mins) {
+      const m = Math.max(0, parseInt(mins || 0, 10) || 0);
+      if (m < 60) return `${m}m`;
+      const h = Math.floor(m / 60), rem = m % 60;
+      return rem ? `${h}h ${rem}m` : `${h}h`;
+    }
+
+    function visitorStayFlagsHtml(v) {
+      const chips = [];
+      if (v.expectedDurationLabel) chips.push(`<span class="badge" style="background:#f1f5f9;color:#334155">⏱ ${esc(v.expectedDurationLabel)}</span>`);
+      if (v.isOverstay) {
+        const overM = Math.max(1, v.varianceMinutes || 1);
+        chips.push(`<span class="badge b-overdue">⚠ Time Elapsed (+${formatMins(overM)})</span>`);
+      }
+      if (v.status === 'Approved' && v.totalGateCount > 1) {
+        chips.push(`<span class="badge b-approved">🛡 Gates ${v.completedGateCount}/${v.totalGateCount}</span>`);
+      }
+      if (v.status === 'Checked Out' && v.checkoutType) {
+        const cls = v.checkoutType === 'Early Leave' ? 'b-pending' : (v.checkoutType === 'Extended / Overstay' ? 'b-overdue' : 'b-approved');
+        const icon = v.checkoutType === 'Early Leave' ? '⚡ ' : (v.checkoutType === 'Extended / Overstay' ? '⏱ ' : '✓ ');
+        chips.push(`<span class="badge ${cls}">${icon}${esc(v.checkoutType)}</span>`);
+      }
+      return chips.join(' ');
     }
 
     function renderDashboard() {
@@ -1086,8 +1129,12 @@
       if (canVisitors) {
         const vQ = [...pending, ...approved, ...inside].slice(0, 8);
         document.getElementById('dashVisitorQueue').innerHTML = vQ.length ? vQ.map(v => `
-          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid var(--border)">
-            <div><b>${esc(v.visitorName)}</b> <span style="color:var(--muted);font-size:12px">(${esc(v.company || v.phone)})</span><br><span style="font-size:12px;color:var(--muted)">Meet: <b>${esc(v.hostName || v.department)}</b> · ${statusBadge(v.status)}</span></div>
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid var(--border);flex-wrap:wrap">
+            <div>
+              <b>${esc(v.visitorName)}</b> <span style="color:var(--muted);font-size:12px">(${esc(v.company || v.phone)})</span><br>
+              <span style="font-size:12px;color:var(--muted)">Meet: <b>${esc(v.hostName || v.department)}</b> · ${statusBadge(v.status)} ${visitorStayFlagsHtml(v)}</span>
+              ${v.status === 'Approved' && v.nextGateLayer && v.totalGateCount > 1 ? `<div style="font-size:11.5px;color:var(--accent-dark);margin-top:3px">Next Gate: <b>${esc(v.nextGateLayer.name)}</b></div>` : ''}
+            </div>
             <div style="display:flex;gap:6px;flex-wrap:wrap">${visitorActionsHtml(v)}</div>
           </div>
         `).join('') : '<p style="color:var(--muted)">No pending or active visitors right now.</p>';
@@ -1162,12 +1209,20 @@
       const canWrite = hasPerm('visitors', 'rw');
       const btns = [];
       if (canWrite) {
-        if (v.status === 'Pending') btns.push(`<button class="btn btn-primary" onclick="decideVisitor('${esc(v.id)}','Approved')">✓ Approve</button>`, `<button class="btn btn-danger" onclick="decideVisitor('${esc(v.id)}','Rejected')">✕ Reject</button>`);
-        else if (v.status === 'Approved') btns.push(`<button class="btn btn-blue" onclick="checkinVisitor('${esc(v.id)}')">📍 Check In</button>`, `<button class="btn" onclick="checkoutVisitor('${esc(v.id)}')">🚪 Check Out</button>`);
-        else if (v.status === 'Checked In') btns.push(`<button class="btn btn-amber" onclick="checkoutVisitor('${esc(v.id)}')">🚪 Check Out</button>`);
+        if (v.status === 'Pending') {
+          btns.push(`<button class="btn btn-primary" onclick="decideVisitor('${esc(v.id)}','Approved')">✓ Approve</button>`, `<button class="btn btn-danger" onclick="decideVisitor('${esc(v.id)}','Rejected')">✕ Reject</button>`);
+        } else if (v.status === 'Approved') {
+          const gateLabel = (v.totalGateCount > 1 && v.nextGateLayer)
+            ? `📍 Check In (${v.completedGateCount + 1}/${v.totalGateCount}: ${v.nextGateLayer.name})`
+            : '📍 Check In';
+          btns.push(`<button class="btn btn-blue" onclick="checkinVisitor('${esc(v.id)}')">${esc(gateLabel)}</button>`, `<button class="btn" onclick="openCheckoutModal('${esc(v.id)}')">🚪 Check Out</button>`);
+        } else if (v.status === 'Checked In') {
+          btns.push(`<button class="btn btn-soft" onclick="openStayResponseModal('${esc(v.id)}')">⏱ Stay / Update</button>`, `<button class="btn btn-amber" onclick="openCheckoutModal('${esc(v.id)}')">🚪 Check Out</button>`);
+        }
       }
+      btns.push(`<button type="button" class="btn" onclick="openVisitorDetailsModal('${esc(v.id)}')">📋 Details</button>`);
       if (allowDelete && isAdmin()) btns.push(`<button class="btn btn-danger" onclick="deleteVisitor('${esc(v.id)}')">🗑 Delete</button>`);
-      return btns.length ? btns.join('') : `<span style="font-size:12px;color:var(--muted)">${canWrite ? 'Completed' : 'Read only'}</span>`;
+      return btns.join('');
     }
     function setVTab(tab, btn) { APP.vTab = tab; document.querySelectorAll('#vStatusTabs .pill-tab').forEach(b => b.classList.remove('active')); btn.classList.add('active'); renderVisitors(); }
     function renderVisitors() {
@@ -1176,12 +1231,24 @@
       const rows = APP.visitors.filter(v => (!fac || !v.factory || v.factory === fac) && (APP.vTab === 'all' || v.status === APP.vTab) && (!q || `${v.id} ${v.visitorName} ${v.phone} ${v.company} ${v.hostName} ${v.department}`.toLowerCase().includes(q)));
       document.getElementById('vTableBody').innerHTML = rows.length ? rows.map(v => {
         const thumbs = [...(v.selfiePhotos || []), ...(v.idCardPhotos || [])];
+        const gateTrail = (v.gateCheckins || []).map(c => `🛡 ${esc(c.layerName)} (${new Date(c.checkedInAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})})`).join('<br>');
         return `<tr>
           <td><b>${esc(v.id)}</b><br><span style="font-size:11.5px;color:var(--muted)">${new Date(v.entryTime).toLocaleString([], {day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</span></td>
           <td><b>${esc(v.visitorName)}</b><br><span style="font-size:12px;color:var(--muted)">${esc(v.company || '-')} · ${esc(v.phone || '-')}</span><br><span style="font-size:11.5px;color:var(--muted)">Purpose: ${esc(v.purpose || '-')}</span></td>
           <td><b>${esc(v.hostName || 'Whole Dept')}</b><br><span style="font-size:12px;color:var(--muted)">${esc(v.department || '-')} · ${esc(v.factory || '-')}</span></td>
           <td>${thumbs.length ? `<div class="thumb-row">${thumbs.map(u => mediaThumbHtml(u)).join('')}</div>` : '<span style="color:var(--muted);font-size:12px">—</span>'}</td>
-          <td>${statusBadge(v.status)}<div style="font-size:11px;color:var(--muted);margin-top:4px;line-height:1.4">${v.approvedBy ? `Approved: ${esc(v.approvedBy)}<br>` : ''}${v.checkedInAt ? `In: ${new Date(v.checkedInAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})} (${esc(v.checkedInBy)})<br>` : ''}${v.checkedOutAt ? `Out: ${new Date(v.checkedOutAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})} (${esc(v.checkedOutBy)})` : ''}</div></td>
+          <td>
+            <div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center">${statusBadge(v.status)} ${visitorStayFlagsHtml(v)}</div>
+            <div style="font-size:11px;color:var(--muted);margin-top:4px;line-height:1.45">
+              ${v.approvedBy ? `Approved: ${esc(v.approvedBy)}<br>` : ''}
+              ${gateTrail ? `${gateTrail}<br>` : ''}
+              ${v.status === 'Approved' && v.nextGateLayer && v.totalGateCount > 1 ? `<span style="color:var(--accent-dark);font-weight:700">Next Gate: ${esc(v.nextGateLayer.name)}</span><br>` : ''}
+              ${v.checkedInAt ? `In: ${new Date(v.checkedInAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})} (${esc(v.checkedInBy)})<br>` : ''}
+              ${v.expectedCheckoutAt && v.status === 'Checked In' ? `Due Out: ${new Date(v.expectedCheckoutAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}<br>` : ''}
+              ${v.overstayReason ? `<span style="color:#9a4a05"><b>Stay Reason:</b> ${esc(v.overstayReason)}</span><br>` : ''}
+              ${v.checkedOutAt ? `Out: ${new Date(v.checkedOutAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})} (${esc(v.checkedOutBy)})${v.checkoutNote ? ` · ${esc(v.checkoutNote)}` : ''}` : ''}
+            </div>
+          </td>
           <td><div style="display:flex;gap:6px;flex-wrap:wrap">${visitorActionsHtml(v, true)}</div></td>
         </tr>`;
       }).join('') : '<tr><td colspan="6" style="color:var(--muted)">No matching visitor passes found.</td></tr>';
@@ -1190,13 +1257,273 @@
       let reason = decision === 'Rejected' ? (prompt('Reason for rejection (optional):') || '') : '';
       try { await api(`/api/visitors/${encodeURIComponent(vid)}/decision`, { method: 'POST', body: JSON.stringify({ decision, reason }) }); showToast(`Visitor ${decision}`); await Promise.all([loadVisitors(), loadNotifs()]); renderCurrentView(); } catch (err) { showToast(err.message, true); }
     }
-    async function checkinVisitor(vid) { try { await api(`/api/visitors/${encodeURIComponent(vid)}/checkin`, { method: 'POST', body: '{}' }); showToast('Visitor Checked In'); await Promise.all([loadVisitors(), loadNotifs()]); renderCurrentView(); } catch (err) { showToast(err.message, true); } }
-    async function checkoutVisitor(vid) { try { await api(`/api/visitors/${encodeURIComponent(vid)}/checkout`, { method: 'POST', body: '{}' }); showToast('Visitor Checked Out'); await Promise.all([loadVisitors(), loadNotifs()]); renderCurrentView(); } catch (err) { showToast(err.message, true); } }
+    async function checkinVisitor(vid) {
+      try {
+        const res = await api(`/api/visitors/${encodeURIComponent(vid)}/checkin`, { method: 'POST', body: '{}' });
+        if (res.nextLayer) {
+          showToast(`Cleared ${res.completedLayer?.name || 'Gate'}! Next: ${res.nextLayer.name}`);
+        } else {
+          showToast('Visitor Checked In inside factory!');
+        }
+        await Promise.all([loadVisitors(), loadNotifs()]);
+        renderCurrentView();
+      } catch (err) { showToast(err.message, true); }
+    }
+    async function checkoutVisitor(vid, note = '', earlyLeave = false) {
+      try {
+        const res = await api(`/api/visitors/${encodeURIComponent(vid)}/checkout`, { method: 'POST', body: JSON.stringify({ note, earlyLeave }) });
+        showToast(`Visitor Checked Out (${res.visitor?.checkoutType || 'Completed'})`);
+        await Promise.all([loadVisitors(), loadNotifs()]);
+        renderCurrentView();
+      } catch (err) { showToast(err.message, true); }
+    }
     async function deleteVisitor(vid) {
       if (!confirm(`Delete visitor pass '${vid}' and its photos/documents permanently?`)) return;
       try { await api(`/api/visitors/${encodeURIComponent(vid)}`, { method: 'DELETE' }); showToast('Visitor pass deleted'); await Promise.all([loadVisitors(), loadNotifs()]); renderCurrentView(); } catch (err) { showToast(err.message, true); }
     }
 
+    function openCheckoutModal(vid) {
+      const v = APP.visitors.find(x => x.id === vid);
+      if (!v) return;
+      const isEarlyGuess = Boolean(v.status === 'Checked In' && v.expectedCheckoutAt && Date.now() < new Date(v.expectedCheckoutAt).getTime() - 300000);
+      const isOverGuess = Boolean(v.isOverstay);
+      const hintTxt = v.status === 'Approved'
+        ? 'Visitor has not completed final factory Check-In yet (will record as Left Before Check-In).'
+        : isEarlyGuess
+          ? '⚡ Visitor is leaving earlier than expected duration (will be marked Early Leave).'
+          : isOverGuess
+            ? '⚠ Visit exceeded expected duration (will be marked Extended / Overstay).'
+            : '✓ Visitor is checking out on time.';
+      openModal(`
+        <div class="modal-hd"><h2>🚪 Check Out · ${esc(v.visitorName)}</h2><button class="btn" onclick="closeModal()">✕</button></div>
+        <form onsubmit="submitCheckoutModal(event, '${esc(v.id)}')" class="form-2">
+          <div class="f-group full" style="background:var(--surface-soft);border:1px solid var(--border);border-radius:10px;padding:10px;font-size:12.5px">
+            <b>${esc(v.id)}</b> · Expected: <b>${esc(v.expectedDurationLabel || 'Not set')}</b>${v.checkedInAt ? ` · In at <b>${new Date(v.checkedInAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</b>` : ''}
+            <div style="margin-top:5px;color:var(--accent-dark);font-weight:700">${esc(hintTxt)}</div>
+          </div>
+          ${v.status === 'Checked In' ? `<div class="f-group full"><label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="coEarlyLeave" style="width:16px;height:16px" ${isEarlyGuess ? 'checked' : ''}> Mark as Early Leave (left before expected completion)</label></div>` : ''}
+          <div class="f-group full">
+            <label>Checkout / Exit Note (Optional)</label>
+            <input id="coNote" placeholder="e.g. Work completed / Left early as task finished">
+            <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
+              <button type="button" class="btn" style="padding:4px 9px;font-size:11.5px" onclick="document.getElementById('coNote').value='Work completed'">Work completed</button>
+              <button type="button" class="btn" style="padding:4px 9px;font-size:11.5px" onclick="document.getElementById('coNote').value='Task finished early'">Task finished early</button>
+              <button type="button" class="btn" style="padding:4px 9px;font-size:11.5px" onclick="document.getElementById('coNote').value='Meeting extended and completed'">Meeting extended &amp; done</button>
+            </div>
+          </div>
+          <div class="f-group full"><button type="submit" class="btn btn-amber btn-full">🚪 Confirm Check Out</button></div>
+        </form>
+      `);
+    }
+    async function submitCheckoutModal(e, vid) {
+      e.preventDefault();
+      const note = document.getElementById('coNote')?.value.trim() || '';
+      const earlyLeave = Boolean(document.getElementById('coEarlyLeave')?.checked);
+      closeModal();
+      await checkoutVisitor(vid, note, earlyLeave);
+    }
+
+    async function sendStayResponse(vid, action, reason = '', extendMinutes = 30) {
+      try {
+        const res = await api(`/api/visitors/${encodeURIComponent(vid)}/stay-response`, {
+          method: 'POST',
+          body: JSON.stringify({ action, reason, extendMinutes }),
+        });
+        showToast(res.action === 'checked_out'
+          ? `Visitor Checked Out (${res.visitor?.checkoutType || 'Left'})`
+          : `Updated: Visitor still inside (+${extendMinutes}m)`);
+        await Promise.all([loadVisitors(), loadNotifs()]);
+        renderCurrentView();
+      } catch (err) {
+        showToast(err.message, true);
+      }
+    }
+
+    function openStayResponseModal(vid) {
+      const v = APP.visitors.find(x => x.id === vid);
+      if (!v) return;
+      openModal(`
+        <div class="modal-hd"><h2>⏱ Visitor Stay Status · ${esc(v.visitorName)}</h2><button class="btn" onclick="closeModal()">✕</button></div>
+        <div style="background:var(--surface-soft);border:1px solid var(--border);border-radius:10px;padding:10px;font-size:12.5px;margin-bottom:12px">
+          <b>${esc(v.id)}</b> · To meet <b>${esc(v.hostName || v.department || 'Plant')}</b><br>
+          Expected: <b>${esc(v.expectedDurationLabel || 'Not set')}</b>${v.checkedInAt ? ` · In at <b>${new Date(v.checkedInAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</b>` : ''}${v.actualDurationMinutes !== null && v.actualDurationMinutes !== undefined ? ` · Inside for <b>${formatMins(v.actualDurationMinutes)}</b>` : ''}
+        </div>
+        <form onsubmit="submitStayResponseModal(event, '${esc(v.id)}')" class="form-2">
+          <div class="f-group full">
+            <label>If Still Inside — Reason (Work / Meeting Pending) *</label>
+            <input id="srReason" value="${esc(v.overstayReason || '')}" placeholder="e.g. Meeting running late / Sample inspection pending">
+            <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
+              <button type="button" class="btn" style="padding:4px 9px;font-size:11.5px" onclick="document.getElementById('srReason').value='Meeting still in progress'">Meeting in progress</button>
+              <button type="button" class="btn" style="padding:4px 9px;font-size:11.5px" onclick="document.getElementById('srReason').value='Work / service pending'">Work pending</button>
+              <button type="button" class="btn" style="padding:4px 9px;font-size:11.5px" onclick="document.getElementById('srReason').value='Waiting for dispatch / approval'">Waiting for approval</button>
+            </div>
+          </div>
+          <div class="f-group full">
+            <label>Next Follow-Up Reminder After</label>
+            <select id="srExtend">
+              <option value="15">+15 Minutes</option>
+              <option value="30" selected>+30 Minutes</option>
+              <option value="60">+1 Hour</option>
+              <option value="120">+2 Hours</option>
+            </select>
+          </div>
+          <div class="f-group"><button type="submit" class="btn btn-primary btn-full">⏳ Confirm Still Inside</button></div>
+          <div class="f-group"><button type="button" class="btn btn-amber btn-full" onclick="confirmLeftFromStayModal('${esc(v.id)}')">🚪 Already Left / Check Out</button></div>
+        </form>
+      `);
+    }
+    async function submitStayResponseModal(e, vid) {
+      e.preventDefault();
+      const reason = document.getElementById('srReason')?.value.trim() || 'Work / meeting still in progress';
+      const ext = parseInt(document.getElementById('srExtend')?.value || '30', 10) || 30;
+      closeModal();
+      await sendStayResponse(vid, 'still_inside', reason, ext);
+    }
+    async function confirmLeftFromStayModal(vid) {
+      const note = document.getElementById('srReason')?.value.trim() || '';
+      closeModal();
+      await sendStayResponse(vid, 'left', note, 30);
+    }
+
+    function openVisitorDetailsModal(vid) {
+      const v = APP.visitors.find(x => x.id === vid);
+      if (!v) return;
+      const thumbs = [...(v.selfiePhotos || []), ...(v.idCardPhotos || [])];
+      const layers = v.gateLayers || [];
+      const checkins = v.gateCheckins || [];
+      const doneMap = new Map(checkins.map(c => [c.layerId, c]));
+      const layersHtml = layers.length ? layers.map((l, idx) => {
+        const done = doneMap.get(l.id);
+        return `<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 9px;border-radius:9px;border:1px solid var(--border);background:${done ? '#effaf4' : '#f8fafc'};font-size:12.5px">
+          <span><b>${idx + 1}. ${esc(l.name)}</b> ${l.factory ? `<span style="color:var(--muted)">(${esc(l.factory)})</span>` : '<span style="color:var(--muted)">(All Factories)</span>'}</span>
+          <span>${done ? `<span class="badge b-approved">✓ ${esc(done.checkedInBy)} · ${new Date(done.checkedInAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</span>` : '<span class="badge b-pending">⏳ Pending</span>'}</span>
+        </div>`;
+      }).join('') : '<div style="font-size:12.5px;color:var(--muted)">Standard single-step Gate Check-In</div>';
+
+      const updates = v.stayUpdates || [];
+      const timelineHtml = updates.length ? updates.map((u, idx) => `
+        <div style="padding:7px 10px;border-left:3px solid #157a54;background:#f8fbf9;border-radius:0 8px 8px 0;font-size:12px">
+          <div style="font-weight:700">${idx + 1}. ${esc(u.note || u.action || 'Update')}</div>
+          <div style="color:var(--muted);font-size:11px">${u.ts ? new Date(u.ts).toLocaleString() : ''} · By <b>${esc(u.actor || 'System')}</b></div>
+        </div>
+      `).join('') : '<div style="font-size:12px;color:var(--muted)">No timeline logs recorded yet.</div>';
+
+      let durationAssess = 'Pending Gate Entry';
+      if (v.status === 'Approved') durationAssess = 'Approved — Waiting at Security Gate';
+      else if (v.status === 'Rejected') durationAssess = `Rejected${v.rejectedReason ? ': ' + v.rejectedReason : ''}`;
+      else if (v.status === 'Checked In') {
+        durationAssess = v.isOverstay
+          ? `⚠ Overstay (+${formatMins(v.varianceMinutes)} beyond ${v.expectedDurationLabel || 'expected time'})`
+          : `⏳ Inside Plant (${formatMins(v.actualDurationMinutes)} elapsed${v.expectedDurationLabel ? ' of ' + v.expectedDurationLabel : ''})`;
+      } else if (v.status === 'Checked Out') {
+        const spent = v.actualDurationMinutes !== null && v.actualDurationMinutes !== undefined ? ` · Spent: ${formatMins(v.actualDurationMinutes)}` : '';
+        durationAssess = `${v.checkoutType || 'Completed'}${spent}`;
+      }
+
+      const canWrite = hasPerm('visitors', 'rw');
+      const quickBtns = [];
+      if (canWrite) {
+        if (v.status === 'Pending') {
+          quickBtns.push(`<button class="btn btn-primary" onclick="closeModal();decideVisitor('${esc(v.id)}','Approved')">✓ Approve</button>`, `<button class="btn btn-danger" onclick="closeModal();decideVisitor('${esc(v.id)}','Rejected')">✕ Reject</button>`);
+        } else if (v.status === 'Approved') {
+          const gl = (v.totalGateCount > 1 && v.nextGateLayer) ? `📍 Check In (${v.nextGateLayer.name})` : '📍 Check In';
+          quickBtns.push(`<button class="btn btn-blue" onclick="closeModal();checkinVisitor('${esc(v.id)}')">${esc(gl)}</button>`, `<button class="btn" onclick="openCheckoutModal('${esc(v.id)}')">🚪 Check Out</button>`);
+        } else if (v.status === 'Checked In') {
+          quickBtns.push(`<button class="btn btn-soft" onclick="openStayResponseModal('${esc(v.id)}')">⏱ Update Stay / Reason</button>`, `<button class="btn btn-amber" onclick="openCheckoutModal('${esc(v.id)}')">🚪 Check Out</button>`);
+        }
+      }
+
+      openModal(`
+        <div class="modal-hd"><h2>📋 Visitor Pass Flow · ${esc(v.id)}</h2><button class="btn" onclick="closeModal()">✕</button></div>
+        <div style="display:flex;flex-direction:column;gap:12px">
+          <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">${statusBadge(v.status)} ${visitorStayFlagsHtml(v)}</div>
+
+          <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;background:var(--surface-soft);border:1px solid var(--border);border-radius:12px;padding:12px;font-size:12.5px">
+            <div><span style="color:var(--muted)">Visitor:</span><br><b>${esc(v.visitorName)}</b> (${esc(v.phone || '-')})</div>
+            <div><span style="color:var(--muted)">Company / City:</span><br><b>${esc(v.company || '-')}</b></div>
+            <div><span style="color:var(--muted)">To Meet:</span><br><b>${esc(v.hostName || 'Whole Dept')}</b> (${esc(v.department || '-')})</div>
+            <div><span style="color:var(--muted)">Factory / Vehicle:</span><br><b>${esc(v.factory || 'General')}</b> · ${esc(v.vehicleNo || 'No Vehicle')}</div>
+            <div style="grid-column:1/-1"><span style="color:var(--muted)">Purpose of Visit:</span><br><b>${esc(v.purpose || '-')}</b>${v.notes ? ` · Notes: ${esc(v.notes)}` : ''}</div>
+          </div>
+
+          <div style="background:#f4faf7;border:1px solid #cce3d6;border-radius:12px;padding:12px;font-size:12.5px">
+            <div style="font-weight:800;margin-bottom:6px">⏱ Time &amp; Stay Assessment</div>
+            <div><b>Expected Duration:</b> ${esc(v.expectedDurationLabel || 'Not specified')} &nbsp;|&nbsp; <b>Assessment:</b> ${esc(durationAssess)}</div>
+            <div style="margin-top:4px">
+              <b>Entry:</b> ${new Date(v.entryTime).toLocaleString([], {day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}
+              ${v.approvedAt ? ` &nbsp;|&nbsp; <b>Approved:</b> ${new Date(v.approvedAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})} (${esc(v.approvedBy)})` : ''}
+            </div>
+            <div style="margin-top:4px">
+              <b>Factory IN:</b> ${v.checkedInAt ? `${new Date(v.checkedInAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})} (${esc(v.checkedInBy)})` : 'Not checked in yet'}
+              ${v.expectedCheckoutAt ? ` &nbsp;|&nbsp; <b>Expected OUT:</b> ${new Date(v.expectedCheckoutAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}` : ''}
+            </div>
+            ${v.checkedOutAt ? `<div style="margin-top:4px"><b>Actual OUT:</b> ${new Date(v.checkedOutAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})} (${esc(v.checkedOutBy)})${v.checkoutType ? ` · <b>Type:</b> ${esc(v.checkoutType)}` : ''}</div>` : ''}
+            ${v.overstayReason ? `<div style="margin-top:6px;padding:6px 8px;border-radius:8px;background:#fff8eb;border:1px solid #f5d08a"><b>Overstay / Stay Reason:</b> ${esc(v.overstayReason)}</div>` : ''}
+            ${v.checkoutNote ? `<div style="margin-top:6px;padding:6px 8px;border-radius:8px;background:#fff;border:1px solid var(--border)"><b>Checkout Note:</b> ${esc(v.checkoutNote)}</div>` : ''}
+          </div>
+
+          <div>
+            <div style="font-weight:800;font-size:13px;margin-bottom:6px">🛡 Security Gate Check-In Layers</div>
+            <div style="display:flex;flex-direction:column;gap:6px">${layersHtml}</div>
+          </div>
+
+          ${thumbs.length ? `<div><div style="font-weight:800;font-size:13px;margin-bottom:6px">📷 Photos</div><div class="thumb-row">${thumbs.map(u => mediaThumbHtml(u)).join('')}</div></div>` : ''}
+
+          <div>
+            <div style="font-weight:800;font-size:13px;margin-bottom:6px">📜 Complete Activity Timeline</div>
+            <div style="display:flex;flex-direction:column;gap:6px;max-height:200px;overflow-y:auto">${timelineHtml}</div>
+          </div>
+
+          ${quickBtns.length ? `<div style="display:flex;gap:8px;flex-wrap:wrap;padding-top:6px;border-top:1px solid var(--border)">${quickBtns.join('')}</div>` : ''}
+        </div>
+      `);
+    }
+
+    function renderLiveStayBanner() {
+      const el = document.getElementById('liveStayBanner');
+      if (!el) return;
+      if (!hasPerm('visitors', 'rw')) { el.classList.add('hidden'); el.innerHTML = ''; return; }
+      const activeStayAlerts = [];
+      const seenVid = new Set();
+      for (const n of (APP.notifications || [])) {
+        if (n.kind !== 'visitor_stay_check' || n.read || !n.targetId || seenVid.has(n.targetId)) continue;
+        const vis = (APP.visitors || []).find(v => v.id === n.targetId);
+        if (vis && vis.status === 'Checked In') {
+          seenVid.add(n.targetId);
+          activeStayAlerts.push({ n, vis });
+        }
+      }
+      if (!activeStayAlerts.length) { el.classList.add('hidden'); el.innerHTML = ''; return; }
+      el.classList.remove('hidden');
+      el.innerHTML = activeStayAlerts.slice(0, 2).map(({ n, vis }) => `
+        <div class="card" style="border-left:5px solid #d97706;background:#fffaf0;margin-bottom:8px;padding:12px 14px">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap">
+            <div style="flex:1;min-width:220px">
+              <div style="font-weight:800;font-size:13.5px;color:#92400e">${esc(n.title)}</div>
+              <div style="font-size:12px;color:var(--muted);margin-top:2px">${esc(n.body)}</div>
+            </div>
+            <button type="button" class="btn" style="padding:5px 10px;font-size:12px" onclick="openVisitorDetailsModal('${esc(vis.id)}')">📋 Details</button>
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:8px">
+            <input id="bannerReply-${esc(vis.id)}" class="input" style="flex:1;min-width:190px" placeholder="Reply reason if still inside (e.g. Meeting running late)…">
+            <select id="bannerExt-${esc(vis.id)}" class="input" style="width:110px">
+              <option value="15">+15 min</option>
+              <option value="30" selected>+30 min</option>
+              <option value="60">+1 hour</option>
+              <option value="120">+2 hours</option>
+            </select>
+            <button type="button" class="btn btn-primary" onclick="sendStayResponse('${esc(vis.id)}','still_inside',document.getElementById('bannerReply-${esc(vis.id)}').value,parseInt(document.getElementById('bannerExt-${esc(vis.id)}').value,10))">⏳ Still Inside (Reply)</button>
+            <button type="button" class="btn btn-amber" onclick="sendStayResponse('${esc(vis.id)}','left',document.getElementById('bannerReply-${esc(vis.id)}').value,30)">🚪 Left / Check Out</button>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function toggleModalDurationCustom() {
+      const sel = document.getElementById('mvDuration');
+      const cust = document.getElementById('mvDurationCustom');
+      if (cust && sel) cust.classList.toggle('hidden', sel.value !== 'custom');
+    }
     function openNewVisitorModal() {
       APP.modalPhotos = { a: [], b: [] };
       openModal(`
@@ -1210,7 +1537,22 @@
           <div class="f-group"><label>Company</label><input id="mvCompany"></div>
           <div class="f-group"><label>Purpose *</label><input id="mvPurpose" required></div>
           <div class="f-group"><label>Vehicle No</label><input id="mvVeh"></div>
-          <div class="f-group"><label>Notes</label><input id="mvNotes"></div>
+          <div class="f-group">
+            <label>Expected Visit Duration *</label>
+            <div style="display:flex;gap:6px">
+              <select id="mvDuration" onchange="toggleModalDurationCustom()">
+                <option value="30">30 Minutes (Half Hour)</option>
+                <option value="60" selected>1 Hour</option>
+                <option value="120">2 Hours</option>
+                <option value="180">3 Hours</option>
+                <option value="240">4 Hours</option>
+                <option value="480">Full Day (8 Hours)</option>
+                <option value="custom">Custom (Minutes)</option>
+              </select>
+              <input id="mvDurationCustom" type="number" min="5" max="1440" value="45" class="hidden" style="width:95px" placeholder="Mins">
+            </div>
+          </div>
+          <div class="f-group full"><label>Notes</label><input id="mvNotes"></div>
           <div class="f-group"><label>Visitor Selfie Photos</label><div style="display:flex;gap:6px"><button type="button" class="btn" onclick="modalCapture('a', true)">📷 Cam</button><button type="button" class="btn" onclick="modalCapture('a', false)">📁 File</button></div><div class="thumb-row" id="modalThumbs-a"></div></div>
           <div class="f-group"><label>ID Card Photos</label><div style="display:flex;gap:6px"><button type="button" class="btn" onclick="modalCapture('b', true)">📷 Cam</button><button type="button" class="btn" onclick="modalCapture('b', false)">📁 File</button></div><div class="thumb-row" id="modalThumbs-b"></div></div>
           <div class="f-group full"><button type="submit" class="btn btn-primary btn-full">Create Visitor Pass →</button></div>
@@ -1220,8 +1562,17 @@
     }
     async function submitModalVisitor(e) {
       e.preventDefault(); const hSel = document.getElementById('mvHost'), hOpt = hSel.options[hSel.selectedIndex];
+      const durSel = document.getElementById('mvDuration');
+      let expMins = 60, expLabel = '1 Hour';
+      if (durSel?.value === 'custom') {
+        expMins = Math.max(5, Math.min(1440, parseInt(document.getElementById('mvDurationCustom')?.value || '45', 10) || 45));
+        expLabel = '';
+      } else if (durSel) {
+        expMins = parseInt(durSel.value || '60', 10) || 60;
+        expLabel = durSel.options[durSel.selectedIndex]?.textContent || '';
+      }
       try {
-        await api('/api/visitors', { method: 'POST', body: JSON.stringify({ factory: document.getElementById('mvFac').value, department: document.getElementById('mvDept').value, hostUsername: hSel.value, hostName: hSel.value && hOpt ? hOpt.textContent.split(' (')[0] : '', visitorName: document.getElementById('mvName').value.trim(), phone: document.getElementById('mvPhone').value.trim(), company: document.getElementById('mvCompany').value.trim(), purpose: document.getElementById('mvPurpose').value.trim(), vehicleNo: document.getElementById('mvVeh').value.trim(), notes: document.getElementById('mvNotes').value.trim(), selfiePhotos: APP.modalPhotos.a, idCardPhotos: APP.modalPhotos.b }) });
+        await api('/api/visitors', { method: 'POST', body: JSON.stringify({ factory: document.getElementById('mvFac').value, department: document.getElementById('mvDept').value, hostUsername: hSel.value, hostName: hSel.value && hOpt ? hOpt.textContent.split(' (')[0] : '', visitorName: document.getElementById('mvName').value.trim(), phone: document.getElementById('mvPhone').value.trim(), company: document.getElementById('mvCompany').value.trim(), purpose: document.getElementById('mvPurpose').value.trim(), vehicleNo: document.getElementById('mvVeh').value.trim(), notes: document.getElementById('mvNotes').value.trim(), expectedDurationMinutes: expMins, expectedDurationLabel: expLabel, selfiePhotos: APP.modalPhotos.a, idCardPhotos: APP.modalPhotos.b }) });
         closeModal(); showToast('Visitor pass created!'); await Promise.all([loadVisitors(), loadNotifs()]); renderCurrentView();
       } catch (err) { showToast(err.message, true); }
     }
@@ -1330,6 +1681,22 @@
         const multi = g.items.length > 1;
         const isOpen = Boolean(APP.expandedNotifGroups[g.key]);
         const hasUnread = g.unreadCount > 0;
+        const stayVis = (n.kind === 'visitor_stay_check' && g.targetId && hasPerm('visitors', 'rw'))
+          ? (APP.visitors || []).find(v => v.id === g.targetId && v.status === 'Checked In')
+          : null;
+        const inlineReplyHtml = stayVis ? `
+          <div style="margin-top:8px;padding:8px 10px;border-radius:10px;background:#fffaf0;border:1px solid #f5d08a;display:flex;gap:6px;flex-wrap:wrap;align-items:center" onclick="event.stopPropagation()">
+            <input id="inboxReply-${esc(stayVis.id)}" class="input" style="flex:1;min-width:180px" placeholder="Reply reason if still inside (e.g. Meeting pending)…">
+            <select id="inboxExt-${esc(stayVis.id)}" class="input" style="width:105px">
+              <option value="15">+15 min</option>
+              <option value="30" selected>+30 min</option>
+              <option value="60">+1 hour</option>
+              <option value="120">+2 hours</option>
+            </select>
+            <button type="button" class="btn btn-primary" onclick="sendStayResponse('${esc(stayVis.id)}','still_inside',document.getElementById('inboxReply-${esc(stayVis.id)}').value,parseInt(document.getElementById('inboxExt-${esc(stayVis.id)}').value,10))">⏳ Still Inside</button>
+            <button type="button" class="btn btn-amber" onclick="sendStayResponse('${esc(stayVis.id)}','left',document.getElementById('inboxReply-${esc(stayVis.id)}').value,30)">🚪 Left / Out</button>
+          </div>
+        ` : '';
         const trailBadge = multi ? `<span class="badge ${isOpen ? 'b-approved' : 'b-checkedin'}" style="margin-left:4px">${isOpen ? `▾ Hide ${g.items.length} trails` : `▸ ${g.items.length} trails`}</span>` : '';
         const subHtml = (multi && isOpen) ? `
           <div class="notif-sublist" onclick="event.stopPropagation()">
@@ -1357,10 +1724,12 @@
               </div>
               <div style="display:flex;gap:6px;flex-wrap:wrap;flex-shrink:0" onclick="event.stopPropagation()">
                 ${multi ? `<button type="button" class="btn" onclick="toggleNotifGroup('${esc(g.key)}')">${isOpen ? '▾ Collapse' : `▸ ${g.items.length} Trails`}</button>` : ''}
+                ${(g.targetView === 'visitors' && g.targetId && (APP.visitors || []).some(v => v.id === g.targetId)) ? `<button type="button" class="btn" onclick="openVisitorDetailsModal('${esc(g.targetId)}')">📋 Details</button>` : ''}
                 ${hasPerm(g.targetView || 'visitors', 'ro') ? `<button type="button" class="btn" onclick="switchView('${esc(g.targetView || 'visitors')}')">Open →</button>` : ''}
                 ${hasUnread ? `<button type="button" class="btn btn-soft" onclick="markNotifGroupRead('${esc(g.key)}')">✓ Read${g.unreadCount > 1 ? ` (${g.unreadCount})` : ''}</button>` : ''}
               </div>
             </div>
+            ${inlineReplyHtml}
             ${subHtml}
           </div>
         `;
@@ -1374,7 +1743,7 @@
       document.getElementById('qhEnd').value = cfg.quiet_hours?.end || '07:00';
       document.getElementById('soundAdminSaveWrap').classList.toggle('hidden', APP.user?.role !== 'Administrator');
       const tones = [...BUILTIN_TONES, ...(APP.soundConfig?.custom_ringtones || []).map(t => ({ id: t.url, name: '🎵 ' + t.name }))];
-      const cats = [['visitor_entry', 'Visitor Entry (Gate Waiting Approval)'], ['visitor_status', 'Visitor Approved / Check-In / Check-Out'], ['material_entry', 'Material Gate Pass Entry / Returned'], ['material_overdue', 'Returnable Material Overdue Alert']];
+      const cats = [['visitor_entry', 'Visitor Entry (Gate Waiting Approval)'], ['visitor_status', 'Visitor Approved / Check-In / Check-Out'], ['visitor_stay_check', 'Visitor Stay / Overstay Follow-Up Alert'], ['material_entry', 'Material Gate Pass Entry / Returned'], ['material_overdue', 'Returnable Material Overdue Alert']];
       document.getElementById('soundMatrixBody').innerHTML = cats.map(([k, label]) => {
         const c = cfg[k] || { enabled: true, silent: false, sound: 'chime' };
         return `<tr><td><input type="checkbox" ${c.enabled !== false ? 'checked' : ''} onchange="updateSoundCat('${k}','enabled',this.checked)"></td><td><b>${esc(label)}</b></td><td><select class="input" onchange="updateSoundCat('${k}','sound',this.value)">${tones.map(t => `<option value="${esc(t.id)}" ${c.sound === t.id ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select></td><td><button type="button" class="btn" onclick="playToneById('${esc(c.sound || 'chime')}', true)">▶ Play</button></td><td><button type="button" class="btn ${c.silent ? 'btn-danger' : 'btn-soft'}" onclick="updateSoundCat('${k}','silent',${!c.silent})">${c.silent ? '🔇 Silent' : '🔔 Active'}</button></td></tr>`;
@@ -1392,7 +1761,7 @@
     function updateSoundCat(key, prop, val) { const c = Object.assign({ enabled: true, silent: false, sound: 'chime' }, effectiveSoundPrefs()[key] || {}); c[prop] = val; APP.userNotifPrefs[key] = c; saveSoundConfig(false); renderNotifications(); }
     async function requestDesktopAndSave() { if (document.getElementById('sndDesktopEnabled').checked && 'Notification' in window && Notification.permission === 'default') try { await Notification.requestPermission(); } catch (_) {} await saveSoundConfig(false); }
     async function saveSoundConfig(applyGlobal = false) {
-      const payload = { applyGlobal: Boolean(applyGlobal), scope: applyGlobal ? 'global' : 'user', enabled: document.getElementById('sndMasterEnabled').checked, desktop_notifications: document.getElementById('sndDesktopEnabled').checked, volume: parseFloat(document.getElementById('sndVolume').value || '0.9'), visitor_entry: APP.userNotifPrefs.visitor_entry || effectiveSoundPrefs().visitor_entry, visitor_status: APP.userNotifPrefs.visitor_status || effectiveSoundPrefs().visitor_status, material_entry: APP.userNotifPrefs.material_entry || effectiveSoundPrefs().material_entry, material_overdue: APP.userNotifPrefs.material_overdue || effectiveSoundPrefs().material_overdue, quiet_hours: { enabled: document.getElementById('qhEnabled').checked, start: document.getElementById('qhStart').value || '22:00', end: document.getElementById('qhEnd').value || '07:00' } };
+      const payload = { applyGlobal: Boolean(applyGlobal), scope: applyGlobal ? 'global' : 'user', enabled: document.getElementById('sndMasterEnabled').checked, desktop_notifications: document.getElementById('sndDesktopEnabled').checked, volume: parseFloat(document.getElementById('sndVolume').value || '0.9'), visitor_entry: APP.userNotifPrefs.visitor_entry || effectiveSoundPrefs().visitor_entry, visitor_status: APP.userNotifPrefs.visitor_status || effectiveSoundPrefs().visitor_status, visitor_stay_check: APP.userNotifPrefs.visitor_stay_check || effectiveSoundPrefs().visitor_stay_check, material_entry: APP.userNotifPrefs.material_entry || effectiveSoundPrefs().material_entry, material_overdue: APP.userNotifPrefs.material_overdue || effectiveSoundPrefs().material_overdue, quiet_hours: { enabled: document.getElementById('qhEnabled').checked, start: document.getElementById('qhStart').value || '22:00', end: document.getElementById('qhEnd').value || '07:00' } };
       try { const res = await api('/api/notifications/sounds', { method: 'POST', body: JSON.stringify(payload) }); if (res.soundConfig) APP.soundConfig = res.soundConfig; if (res.userPrefs) APP.userNotifPrefs = res.userPrefs; showToast(applyGlobal ? 'Organization notification defaults saved!' : 'My sound preferences saved!'); } catch (err) { showToast(err.message, true); }
     }
     async function uploadCustomRingtone() {
@@ -1417,7 +1786,20 @@
       if (cat.enabled !== false) {
         showToast(`${ev.title}`); if (!cat.silent) playToneById(cat.sound || 'chime', false);
         if (effectiveSoundPrefs().desktop_notifications !== false && 'Notification' in window && Notification.permission === 'granted') {
-          try { navigator.serviceWorker?.controller?.postMessage({ type: 'SHOW_NOTIFICATION', title: ev.title, options: { body: ev.body, data: { targetView: ev.targetView || 'visitors', targetId: ev.targetId } } }) || new Notification(ev.title, { body: ev.body, icon: '/static/icons/icon-192.png' }); } catch (_) {}
+          const isStay = ev.kind === 'visitor_stay_check' && ev.targetId;
+          const swOpts = {
+            body: ev.body,
+            tag: ev.targetId ? ('gp-' + ev.targetId) : undefined,
+            requireInteraction: isStay,
+            data: { targetView: ev.targetView || 'visitors', targetId: ev.targetId || '', kind: ev.kind || '' },
+          };
+          if (isStay) {
+            swOpts.actions = [
+              { action: 'still_inside', type: 'text', title: '⏳ Still Inside (Reply)', placeholder: 'Reason (e.g. Meeting pending)' },
+              { action: 'mark_left', title: '🚪 Left / Out' },
+            ];
+          }
+          try { navigator.serviceWorker?.controller?.postMessage({ type: 'SHOW_NOTIFICATION', title: ev.title, options: swOpts }) || new Notification(ev.title, { body: ev.body, icon: '/static/icons/icon-192.png' }); } catch (_) {}
         }
       }
     }
@@ -1674,20 +2056,102 @@
       }
     }
 
+    function renderSecurityLayersEditor() {
+      const box = document.getElementById('securityLayersList');
+      const hint = document.getElementById('securityLayersHint');
+      if (!box) return;
+      const canEdit = hasPerm('settings', 'rw');
+      const layers = APP.securityLayersDraft || [];
+      if (!layers.length) {
+        box.innerHTML = '<div style="font-size:12.5px;color:var(--muted);padding:8px;border:1px dashed var(--border);border-radius:10px">No layers configured. Click "+ Add Layer" to add Main Gate / Factory gates.</div>';
+        if (hint) hint.textContent = 'At least 1 gate check-in layer is recommended.';
+        return;
+      }
+      const facs = APP.factories || [];
+      box.innerHTML = layers.map((l, idx) => {
+        const facCodes = new Set(facs.map(f => typeof f === 'string' ? f : (f.code || f.name || '')));
+        const extraOpt = (l.factory && !facCodes.has(l.factory))
+          ? `<option value="${esc(l.factory)}" selected>${esc(l.factory)}</option>`
+          : '';
+        const facOpts = ['<option value="">All Factories</option>', extraOpt, ...facs.map(f => {
+          const code = typeof f === 'string' ? f : (f.code || f.name || '');
+          const label = typeof f === 'string' ? f : (f.name && f.code && f.name !== f.code ? `${f.code} (${f.name})` : (f.code || f.name || ''));
+          return `<option value="${esc(code)}" ${String(l.factory || '') === String(code) ? 'selected' : ''}>${esc(label)}</option>`;
+        })].join('');
+        return `
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:8px;border:1px solid var(--border);border-radius:10px;background:var(--surface-soft)">
+            <span class="badge b-checkedin" style="min-width:60px;justify-content:center">Step ${idx + 1}</span>
+            <input type="text" class="input" style="flex:1.4;min-width:160px" placeholder="Gate / Cabin Name (e.g. Main Gate Cabin)" value="${esc(l.name || '')}" ${canEdit ? '' : 'disabled'} oninput="updateSecurityLayerField(${idx},'name',this.value)">
+            <select class="input" style="flex:1;min-width:130px" ${canEdit ? '' : 'disabled'} onchange="updateSecurityLayerField(${idx},'factory',this.value)">${facOpts}</select>
+            ${canEdit ? `
+              <button type="button" class="btn" style="padding:5px 8px" title="Move Up" ${idx === 0 ? 'disabled' : ''} onclick="moveSecurityLayer(${idx},-1)">↑</button>
+              <button type="button" class="btn" style="padding:5px 8px" title="Move Down" ${idx === layers.length - 1 ? 'disabled' : ''} onclick="moveSecurityLayer(${idx},1)">↓</button>
+              <button type="button" class="btn btn-danger" style="padding:5px 9px" title="Remove Layer" onclick="removeSecurityLayer(${idx})">✕</button>
+            ` : ''}
+          </div>
+        `;
+      }).join('');
+      if (hint) {
+        hint.textContent = 'Check-In Sequence: Approved → ' + layers.map((l, i) => `Step ${i + 1}: ${l.name || 'Gate'}${l.factory ? ' (' + l.factory + ')' : ''}`).join(' → ') + ' → Checked In (Inside)';
+      }
+    }
+    function addSecurityLayerRow() {
+      const idx = (APP.securityLayersDraft || []).length + 1;
+      APP.securityLayersDraft.push({
+        id: 'gate_' + Date.now().toString(36) + '_' + idx,
+        name: idx === 1 ? 'Main Gate Security Cabin' : (idx === 2 ? 'Factory Security Check' : `Security Checkpoint ${idx}`),
+        factory: '',
+      });
+      renderSecurityLayersEditor();
+    }
+    function updateSecurityLayerField(idx, prop, val) {
+      if (!APP.securityLayersDraft[idx]) return;
+      APP.securityLayersDraft[idx][prop] = val;
+      if (prop === 'factory') renderSecurityLayersEditor();
+      else {
+        const hint = document.getElementById('securityLayersHint');
+        if (hint) hint.textContent = 'Check-In Sequence: Approved → ' + APP.securityLayersDraft.map((l, i) => `Step ${i + 1}: ${l.name || 'Gate'}${l.factory ? ' (' + l.factory + ')' : ''}`).join(' → ') + ' → Checked In (Inside)';
+      }
+    }
+    function moveSecurityLayer(idx, dir) {
+      const target = idx + dir;
+      if (target < 0 || target >= APP.securityLayersDraft.length) return;
+      const tmp = APP.securityLayersDraft[idx];
+      APP.securityLayersDraft[idx] = APP.securityLayersDraft[target];
+      APP.securityLayersDraft[target] = tmp;
+      renderSecurityLayersEditor();
+    }
+    function removeSecurityLayer(idx) {
+      if (APP.securityLayersDraft.length <= 1) {
+        showToast('At least 1 Gate Check-In layer (e.g. Main Gate) is required', true);
+        return;
+      }
+      APP.securityLayersDraft.splice(idx, 1);
+      renderSecurityLayersEditor();
+    }
     function renderSettings() {
       const canEdit = hasPerm('settings', 'rw');
       document.getElementById('setCompany').value = APP.settings.company || APP.org?.name || '';
       document.getElementById('setPortalTitle').value = APP.settings.portal_title || '';
       document.getElementById('setRetDays').value = APP.settings.default_returnable_days || 7;
+      const followEl = document.getElementById('setVisitorFollowupMins');
+      if (followEl) followEl.value = APP.settings.visitor_followup_interval_minutes || 15;
       document.getElementById('setPortalVisitor').checked = APP.settings.portal_visitor_enabled !== false;
       document.getElementById('setPortalMaterial').checked = APP.settings.portal_material_enabled !== false;
-      ['setCompany', 'setPortalTitle', 'setRetDays', 'setPortalVisitor', 'setPortalMaterial', 'orgLogoFileInput'].forEach(id => {
+      APP.securityLayersDraft = (APP.settings.security_layers && APP.settings.security_layers.length
+        ? APP.settings.security_layers
+        : [{ id: 'main_gate', name: 'Main Gate Security Cabin', factory: '' }]
+      ).map((l, i) => ({ id: l.id || ('gate_' + (i + 1)), name: l.name || '', factory: l.factory || '' }));
+      ['setCompany', 'setPortalTitle', 'setRetDays', 'setVisitorFollowupMins', 'setPortalVisitor', 'setPortalMaterial', 'orgLogoFileInput', 'btnAddSecLayer'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.disabled = !canEdit;
       });
       document.getElementById('settingsReadOnlyHint')?.classList.toggle('hidden', canEdit);
       document.getElementById('btnUploadOrgLogo')?.classList.toggle('hidden', !canEdit);
+      document.getElementById('btnAddSecLayer')?.classList.toggle('hidden', !canEdit);
       document.getElementById('settingsSaveWrap')?.classList.toggle('hidden', !canEdit);
+      document.getElementById('settingsLayersSaveWrap')?.classList.toggle('hidden', !canEdit);
+      renderSecurityLayersEditor();
       updatePortalModuleHint();
       const slug = APP.org?.slug || '';
       const loginUrl = `${location.origin}/c/${slug}`;
@@ -1706,6 +2170,14 @@
         updatePortalModuleHint();
         return;
       }
+      const cleanLayers = (APP.securityLayersDraft || [])
+        .map((l, i) => ({ id: String(l.id || ('gate_' + (i + 1))).trim(), name: String(l.name || '').trim(), factory: String(l.factory || '').trim() }))
+        .filter(l => l.name.length > 0);
+      if (!cleanLayers.length) {
+        showToast('Enter at least 1 Security Gate Check-In layer name', true);
+        return;
+      }
+      const followupMins = Math.max(1, Math.min(240, parseInt(document.getElementById('setVisitorFollowupMins')?.value || '15', 10) || 15));
       try {
         await api('/api/settings', {
           method: 'POST',
@@ -1713,8 +2185,10 @@
             company: document.getElementById('setCompany').value.trim(),
             portal_title: document.getElementById('setPortalTitle').value.trim(),
             default_returnable_days: parseInt(document.getElementById('setRetDays').value || '7', 10),
+            visitor_followup_interval_minutes: followupMins,
             portal_visitor_enabled: portalVisitor,
             portal_material_enabled: portalMaterial,
+            security_layers: cleanLayers,
           }),
         });
         showToast('Settings saved!'); await bootSession(); switchView('settings');
@@ -1755,6 +2229,24 @@
     document.getElementById('appCamInput').addEventListener('change', e => { if (e.target.files?.length) uploadModalFiles(e.target.files); });
     document.getElementById('appFileInput').addEventListener('change', e => { if (e.target.files?.length) uploadModalFiles(e.target.files); });
 
+    if (navigator.serviceWorker) {
+      navigator.serviceWorker.addEventListener('message', async (event) => {
+        const msg = event.data || {};
+        if (msg.type === 'PWA_NAVIGATE') {
+          if (msg.view && hasPerm(msg.view, 'ro')) switchView(msg.view);
+          const rv = msg.replyVisitor || msg.meta?.replyVisitor;
+          if (rv && hasPerm('visitors', 'rw')) {
+            await loadVisitors();
+            openStayResponseModal(rv);
+          }
+        } else if (msg.type === 'PWA_VISITOR_UPDATED') {
+          await Promise.all([loadVisitors(), loadNotifs()]);
+          renderCurrentView();
+          if (msg.message) showToast(msg.message);
+        }
+      });
+    }
+
     /* ---------------- STARTUP ---------------- */
     (async function init() {
       const initSlug = detectInitialOrgSlug();
@@ -1768,8 +2260,14 @@
       }
       try {
         await bootSession();
-        const v = new URLSearchParams(location.search).get('view');
+        const qs = new URLSearchParams(location.search);
+        const v = qs.get('view');
         if (v && hasPerm(v, 'ro')) switchView(v);
+        const rv = qs.get('replyVisitor');
+        if (rv && hasPerm('visitors', 'rw')) {
+          if (!APP.visitors.find(x => x.id === rv)) await loadVisitors();
+          openStayResponseModal(rv);
+        }
         return;
       } catch (_) {}
       try { await bootSuperAdmin(); } catch (_) {}

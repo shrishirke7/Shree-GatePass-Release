@@ -252,6 +252,10 @@ DEFAULT_PERMS_BY_ROLE: dict[str, dict[str, str]] = {
     },
 }
 
+DEFAULT_SECURITY_LAYERS = [
+    {"id": "main-gate", "name": "Main Gate Security Cabin", "factory": ""},
+]
+
 DEFAULT_SETTINGS = {
     "company": "Shree GatePass",
     "site_name": DEFAULT_SITE_NAME,
@@ -262,6 +266,8 @@ DEFAULT_SETTINGS = {
     "default_returnable_days": 7,
     "portal_visitor_enabled": True,
     "portal_material_enabled": True,
+    "security_layers": [dict(x) for x in DEFAULT_SECURITY_LAYERS],
+    "visitor_followup_interval_minutes": 15,
 }
 
 
@@ -277,6 +283,69 @@ def _coerce_bool(val, default: bool = True) -> bool:
         if low in ("true", "1", "yes", "on"):
             return True
     return bool(val)
+
+
+def _normalize_security_layers(raw_layers) -> list[dict]:
+    if raw_layers is None:
+        return [dict(x) for x in DEFAULT_SECURITY_LAYERS]
+    if not isinstance(raw_layers, list):
+        return [dict(x) for x in DEFAULT_SECURITY_LAYERS]
+    cleaned: list[dict] = []
+    used_ids: set[str] = set()
+    for idx, item in enumerate(raw_layers, start=1):
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        fac = str(item.get("factory") or "").strip().upper()
+        base_id = normalize_slug(str(item.get("id") or name), f"gate-{idx}")
+        lid = base_id
+        suffix = 2
+        while lid in used_ids:
+            lid = f"{base_id}-{suffix}"
+            suffix += 1
+        used_ids.add(lid)
+        cleaned.append({"id": lid, "name": name[:80], "factory": fac[:40]})
+    return cleaned
+
+
+def _get_org_security_layers(conn, org_id: str) -> list[dict]:
+    raw_settings = _get_org_state(conn, org_id, "settings", dict(DEFAULT_SETTINGS)) or {}
+    if isinstance(raw_settings, dict) and "security_layers" in raw_settings:
+        return _normalize_security_layers(raw_settings.get("security_layers"))
+    return [dict(x) for x in DEFAULT_SECURITY_LAYERS]
+
+
+def _format_duration_label(minutes: int) -> str:
+    m = max(0, int(minutes or 0))
+    if m <= 0:
+        return ""
+    if m == 30:
+        return "30 Minutes"
+    if m == 60:
+        return "1 Hour"
+    if m == 480:
+        return "Full Day (8 Hours)"
+    if m % 60 == 0:
+        hrs = m // 60
+        return f"{hrs} Hour" if hrs == 1 else f"{hrs} Hours"
+    if m > 60:
+        return f"{m // 60}h {m % 60}m"
+    return f"{m} Minutes"
+
+
+def _compute_visitor_gate_progress(row: dict, org_layers: list[dict] | None) -> tuple[list[dict], list[dict], list[dict]]:
+    layers = org_layers if org_layers is not None else [dict(x) for x in DEFAULT_SECURITY_LAYERS]
+    v_fac = str(row.get("factory") or "").strip().casefold()
+    applicable = [
+        dict(l) for l in layers
+        if not str(l.get("factory") or "").strip() or (v_fac and str(l.get("factory") or "").strip().casefold() == v_fac)
+    ]
+    checkins = [c for c in (row.get("gate_checkins") or []) if isinstance(c, dict)]
+    done_ids = {str(c.get("layerId") or "").strip() for c in checkins if str(c.get("layerId") or "").strip()}
+    pending = [l for l in applicable if l["id"] not in done_ids]
+    return applicable, checkins, pending
 
 
 def _portal_modules_from_settings(settings: dict | None) -> tuple[bool, bool]:
@@ -303,6 +372,7 @@ DEFAULT_SOUND_CONFIG = {
     "volume": 0.9,
     "visitor_entry": {"enabled": True, "silent": False, "sound": "chime"},
     "visitor_status": {"enabled": True, "silent": False, "sound": "gentle"},
+    "visitor_stay_check": {"enabled": True, "silent": False, "sound": "double-ding"},
     "material_entry": {"enabled": True, "silent": False, "sound": "double-ding"},
     "material_overdue": {"enabled": True, "silent": False, "sound": "urgent"},
     "quiet_hours": {"enabled": False, "start": "22:00", "end": "07:00"},
@@ -861,13 +931,44 @@ def _iso(val) -> str:
     return str(val or "")
 
 
-def _serialize_visitor(row: dict) -> dict:
+def _parse_dt(val) -> datetime | None:
+    if isinstance(val, datetime):
+        return val if val.tzinfo else val.replace(tzinfo=timezone.utc)
+    if isinstance(val, str) and val.strip():
+        try:
+            dt = datetime.fromisoformat(val.strip().replace("Z", "+00:00"))
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+    return None
+
+
+def _serialize_visitor(row: dict, org_layers: list[dict] | None = None) -> dict:
     id_photos = row.get("id_card_photos") or []
     if row.get("id_card_photo") and row["id_card_photo"] not in id_photos:
         id_photos = [row["id_card_photo"], *id_photos]
     selfies = row.get("selfie_photos") or []
     if row.get("selfie_photo") and row["selfie_photo"] not in selfies:
         selfies = [row["selfie_photo"], *selfies]
+
+    exp_mins = int(row.get("expected_duration_minutes") or 0)
+    exp_label = str(row.get("expected_duration_label") or "").strip() or _format_duration_label(exp_mins)
+    status = row.get("status", "Pending")
+    in_dt = _parse_dt(row.get("checked_in_at"))
+    out_dt = _parse_dt(row.get("checked_out_at"))
+    exp_out_dt = _parse_dt(row.get("expected_checkout_at"))
+    now = datetime.now(timezone.utc)
+
+    actual_mins = None
+    if in_dt:
+        end_dt = out_dt or now
+        actual_mins = max(0, int((end_dt - in_dt).total_seconds() // 60))
+
+    variance_mins = (actual_mins - exp_mins) if (exp_mins > 0 and actual_mins is not None) else None
+    is_overstay = bool(status == "Checked In" and exp_mins > 0 and exp_out_dt and now > exp_out_dt)
+
+    applicable_layers, gate_checkins, pending_layers = _compute_visitor_gate_progress(row, org_layers)
+
     return {
         "id": row["id"],
         "orgId": row.get("org_id", DEFAULT_ORG_ID),
@@ -885,7 +986,7 @@ def _serialize_visitor(row: dict) -> dict:
         "idCardPhotos": id_photos,
         "selfiePhoto": row.get("selfie_photo", ""),
         "selfiePhotos": selfies,
-        "status": row.get("status", "Pending"),
+        "status": status,
         "entryTime": _iso(row.get("entry_time")),
         "approvedBy": row.get("approved_by", ""),
         "approvedAt": _iso(row.get("approved_at")),
@@ -895,6 +996,25 @@ def _serialize_visitor(row: dict) -> dict:
         "checkedOutAt": _iso(row.get("checked_out_at")),
         "rejectedReason": row.get("rejected_reason", ""),
         "notes": row.get("notes", ""),
+        "expectedDurationMinutes": exp_mins,
+        "expectedDurationLabel": exp_label,
+        "expectedCheckoutAt": _iso(row.get("expected_checkout_at")),
+        "nextFollowupAt": _iso(row.get("next_followup_at")),
+        "reminderCount": int(row.get("reminder_count") or 0),
+        "lastReminderAt": _iso(row.get("last_reminder_at")),
+        "overstayReason": row.get("overstay_reason", ""),
+        "stayUpdates": list(row.get("stay_updates") or []),
+        "checkoutType": row.get("checkout_type", ""),
+        "checkoutNote": row.get("checkout_note", ""),
+        "actualDurationMinutes": actual_mins,
+        "varianceMinutes": variance_mins,
+        "isOverstay": is_overstay,
+        "gateCheckins": gate_checkins,
+        "gateLayers": applicable_layers,
+        "pendingGateLayers": pending_layers,
+        "nextGateLayer": pending_layers[0] if pending_layers else None,
+        "completedGateCount": len(gate_checkins),
+        "totalGateCount": len(applicable_layers),
         "createdBy": row.get("created_by", ""),
         "createdAt": _iso(row.get("created_at")),
         "updatedAt": _iso(row.get("updated_at")),
@@ -1019,9 +1139,105 @@ def process_returnable_gatepass_reminders(conn) -> int:
     return sent
 
 
+def process_visitor_stay_reminders(conn) -> int:
+    """Emit recurring stay-check alerts to Host & Security when visitor expected duration elapses without checkout."""
+    sent = 0
+    now = datetime.now(timezone.utc)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT * FROM visitor_passes
+            WHERE status = 'Checked In'
+              AND expected_duration_minutes > 0
+              AND next_followup_at IS NOT NULL
+              AND next_followup_at <= NOW()
+            ORDER BY next_followup_at ASC
+            LIMIT 40
+            """
+        )
+        rows = cur.fetchall() or []
+        org_cache: dict[str, tuple[dict | None, list[dict], int]] = {}
+        for row in rows:
+            oid = row.get("org_id") or DEFAULT_ORG_ID
+            if oid not in org_cache:
+                org_row = _find_org_by_slug_or_id(conn, oid)
+                users_list = _get_org_state(conn, oid, "manual_users", []) or []
+                raw_set = _get_org_state(conn, oid, "settings", dict(DEFAULT_SETTINGS)) or {}
+                try:
+                    rep_mins = max(1, min(240, int(raw_set.get("visitor_followup_interval_minutes") or 15)))
+                except (ValueError, TypeError):
+                    rep_mins = 15
+                org_cache[oid] = (org_row, users_list, rep_mins)
+            org_row, users, rep_mins = org_cache[oid]
+            if not is_org_active(org_row)[0]:
+                continue
+
+            vid = row["id"]
+            in_dt = _parse_dt(row.get("checked_in_at")) or _parse_dt(row.get("entry_time")) or now
+            elapsed_mins = max(1, int((now - in_dt).total_seconds() // 60))
+            exp_mins = int(row.get("expected_duration_minutes") or 60)
+            exp_label = str(row.get("expected_duration_label") or "").strip() or _format_duration_label(exp_mins)
+            new_cnt = int(row.get("reminder_count") or 0) + 1
+            next_at = now + timedelta(minutes=rep_mins)
+            updates = list(row.get("stay_updates") or [])
+            updates.append(
+                {
+                    "ts": now.isoformat(),
+                    "actor": "System",
+                    "action": "reminder_sent",
+                    "note": f"Stay check #{new_cnt} sent ({_format_duration_label(elapsed_mins)} elapsed vs expected {exp_label})",
+                }
+            )
+            cur.execute(
+                """
+                UPDATE visitor_passes
+                   SET reminder_count=%s, last_reminder_at=NOW(), next_followup_at=%s, stay_updates=%s::jsonb, updated_at=NOW()
+                 WHERE id=%s AND org_id=%s
+                """,
+                (new_cnt, next_at, json.dumps(updates[-50:]), vid, oid),
+            )
+
+            targets, tgt_dept, dept_bcast = resolve_notification_targets(
+                users,
+                target_username=row.get("host_username") or "",
+                target_department=row.get("department") or "",
+                factory=row.get("factory") or "",
+                include_security=True,
+                fallback_admin_if_no_security=True,
+            )
+            who_label = row.get("host_name") or row.get("host_username") or row.get("department") or "Host"
+            emit_notification(
+                conn,
+                org_id=oid,
+                kind="visitor_stay_check",
+                level="warning",
+                title=f"⏱ Stay Check #{new_cnt}: {row['visitor_name']} ({vid}) — Still Inside or Left?",
+                body=f"Expected {exp_label} completed ({_format_duration_label(elapsed_mins)} inside with {who_label}). Reply with reason if still in meeting, or mark Left / Check Out.",
+                factory=row.get("factory") or "",
+                target_department=tgt_dept,
+                target_usernames=targets,
+                dept_broadcast=dept_bcast,
+                target_view="visitors",
+                target_id=vid,
+                meta={
+                    "visitor_id": vid,
+                    "visitor_name": row["visitor_name"],
+                    "step": "StayCheck",
+                    "reminder_count": new_cnt,
+                    "elapsed_minutes": elapsed_mins,
+                    "expected_minutes": exp_mins,
+                    "allow_direct_reply": True,
+                    "actions": ["still_inside", "mark_left"],
+                },
+            )
+            _bump_rev(oid, "visitorRev")
+            sent += 1
+    return sent
+
+
 def _reminder_loop() -> None:
     while True:
-        time.sleep(60)
+        time.sleep(30)
         try:
             ensure_db_ready()
             with get_conn() as conn:
@@ -1031,6 +1247,7 @@ def _reminder_loop() -> None:
                     if row and row.get("locked"):
                         try:
                             process_returnable_gatepass_reminders(conn)
+                            process_visitor_stay_reminders(conn)
                         finally:
                             cur.execute("SELECT pg_advisory_unlock(885801)")
         except Exception:
@@ -1727,7 +1944,13 @@ def api_data(conn, org, user):
     v_on, m_on = _portal_modules_from_settings(settings)
     settings["portal_visitor_enabled"] = v_on
     settings["portal_material_enabled"] = m_on
-    sound_cfg = _get_org_state(conn, oid, "sound_config", dict(DEFAULT_SOUND_CONFIG)) or dict(DEFAULT_SOUND_CONFIG)
+    settings["security_layers"] = _normalize_security_layers(raw_settings.get("security_layers") if "security_layers" in raw_settings else None)
+    try:
+        settings["visitor_followup_interval_minutes"] = max(1, min(240, int(settings.get("visitor_followup_interval_minutes") or 15)))
+    except (ValueError, TypeError):
+        settings["visitor_followup_interval_minutes"] = 15
+    raw_sound = _get_org_state(conn, oid, "sound_config", dict(DEFAULT_SOUND_CONFIG)) or {}
+    sound_cfg = {**DEFAULT_SOUND_CONFIG, **raw_sound}
     raw_users = _get_org_state(conn, oid, "manual_users", []) or []
     directory = [
         {
@@ -1981,6 +2204,22 @@ def api_save_settings(conn, org, user):
         return jsonify({"error": "Select at least one Gate Kiosk module (Visitor Pass or Material Entry)"}), 400
     cur_set["portal_visitor_enabled"] = v_enabled
     cur_set["portal_material_enabled"] = m_enabled
+
+    if "security_layers" in data or "securityLayers" in data:
+        raw_layers = data.get("security_layers") if "security_layers" in data else data.get("securityLayers")
+        cur_set["security_layers"] = _normalize_security_layers(raw_layers)
+    elif "security_layers" in raw_cur:
+        cur_set["security_layers"] = _normalize_security_layers(raw_cur.get("security_layers"))
+    else:
+        cur_set["security_layers"] = [dict(x) for x in DEFAULT_SECURITY_LAYERS]
+
+    if "visitor_followup_interval_minutes" in data or "visitorFollowupIntervalMinutes" in data:
+        raw_int = data.get("visitor_followup_interval_minutes", data.get("visitorFollowupIntervalMinutes"))
+        try:
+            cur_set["visitor_followup_interval_minutes"] = max(1, min(240, int(raw_int or 15)))
+        except (ValueError, TypeError):
+            cur_set["visitor_followup_interval_minutes"] = 15
+
     _set_org_state(conn, oid, "settings", cur_set)
     with conn.cursor() as cur:
         cur.execute(
@@ -2025,6 +2264,7 @@ def api_public_portal_options():
         raw_settings = _get_org_state(conn, oid, "settings", dict(DEFAULT_SETTINGS)) or {}
         settings = {**DEFAULT_SETTINGS, **raw_settings}
         v_on, m_on = _portal_modules_from_settings(settings)
+        sec_layers = _normalize_security_layers(raw_settings.get("security_layers") if "security_layers" in raw_settings else None)
         users = _get_org_state(conn, oid, "manual_users", []) or []
     employees = [
         {
@@ -2048,6 +2288,7 @@ def api_public_portal_options():
             "portalVisitorEnabled": v_on,
             "portalMaterialEnabled": m_on,
             "portalModules": {"visitor": v_on, "material": m_on},
+            "securityLayers": sec_layers,
             "dataRev": _ORG_REVISIONS[oid]["dataRev"],
             "factories": factories,
             "factoryOrder": order,
@@ -2131,6 +2372,15 @@ def _create_visitor_pass(conn, org_id: str, data: dict, actor_label: str):
     host_username = str(data.get("hostUsername") or data.get("host_username") or "").strip()
     host_name = str(data.get("hostName") or data.get("host_name") or "").strip()
 
+    raw_dur = data.get("expectedDurationMinutes")
+    if raw_dur is None:
+        raw_dur = data.get("expected_duration_minutes")
+    try:
+        exp_mins = 60 if raw_dur is None or str(raw_dur).strip() == "" else max(0, min(1440, int(raw_dur)))
+    except (ValueError, TypeError):
+        exp_mins = 60
+    exp_label = str(data.get("expectedDurationLabel") or data.get("expected_duration_label") or "").strip() or _format_duration_label(exp_mins)
+
     users = _get_org_state(conn, org_id, "manual_users", []) or []
     if host_username and not host_name:
         matched = next((u for u in users if str(u.get("username", "")).casefold() == host_username.casefold()), None)
@@ -2149,6 +2399,14 @@ def _create_visitor_pass(conn, org_id: str, data: dict, actor_label: str):
 
     vid = _next_human_id(conn, org_id, "VP", "visitor_passes")
     now = datetime.now(timezone.utc)
+    init_updates = [
+        {
+            "ts": now.isoformat(),
+            "actor": actor_label,
+            "action": "created",
+            "note": f"Pass requested" + (f" · Expected duration: {exp_label}" if exp_label else ""),
+        }
+    ]
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -2156,12 +2414,16 @@ def _create_visitor_pass(conn, org_id: str, data: dict, actor_label: str):
                 id, org_id, visitor_name, company, phone, address, purpose, vehicle_no,
                 factory, department, host_username, host_name,
                 id_card_photo, id_card_photos, selfie_photo, selfie_photos,
-                status, entry_time, notes, created_by
+                status, entry_time, notes,
+                expected_duration_minutes, expected_duration_label, stay_updates, gate_checkins,
+                created_by
             ) VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s,
                 %s, %s::jsonb, %s, %s::jsonb,
-                'Pending', %s, %s, %s
+                'Pending', %s, %s,
+                %s, %s, %s::jsonb, '[]'::jsonb,
+                %s
             )
             RETURNING *
             """,
@@ -2184,6 +2446,9 @@ def _create_visitor_pass(conn, org_id: str, data: dict, actor_label: str):
                 json.dumps(selfie_photos),
                 now,
                 str(data.get("notes") or "").strip(),
+                exp_mins,
+                exp_label,
+                json.dumps(init_updates),
                 actor_label,
             ),
         )
@@ -2198,23 +2463,25 @@ def _create_visitor_pass(conn, org_id: str, data: dict, actor_label: str):
         fallback_admin_if_no_security=(not host_username and not department),
     )
     who_label = host_name or host_username or (f"{department} Dept" if department else "Reception")
+    dur_txt = f" · Duration: {exp_label}" if exp_label else ""
     emit_notification(
         conn,
         org_id=org_id,
         kind="visitor_entry",
         level="info",
         title=f"Visitor Waiting at Gate: {visitor_name} ({vid})",
-        body=f"From {row['company'] or 'Individual'} · To meet {who_label} · Purpose: {row['purpose'] or 'Visit'} — Please Approve or Reject.",
+        body=f"From {row['company'] or 'Individual'} · To meet {who_label} · Purpose: {row['purpose'] or 'Visit'}{dur_txt} — Please Approve or Reject.",
         factory=factory,
         target_department=tgt_dept,
         target_usernames=targets,
         dept_broadcast=dept_bcast,
         target_view="visitors",
         target_id=vid,
-        meta={"visitor_id": vid, "step": "Pending", "host_username": host_username},
+        meta={"visitor_id": vid, "step": "Pending", "host_username": host_username, "expected_duration_minutes": exp_mins},
     )
     _bump_rev(org_id, "visitorRev")
-    return _serialize_visitor(row), None
+    org_layers = _get_org_security_layers(conn, org_id)
+    return _serialize_visitor(row, org_layers), None
 
 
 @app.get("/api/public/visitors")
@@ -2229,13 +2496,14 @@ def api_public_list_visitors():
         mod_err = _check_public_portal_module(conn, oid, "visitor")
         if mod_err:
             return jsonify({"error": mod_err[0]}), mod_err[1]
+        org_layers = _get_org_security_layers(conn, oid)
         with conn.cursor() as cur:
             if factory:
                 cur.execute("SELECT * FROM visitor_passes WHERE org_id=%s AND factory=%s ORDER BY entry_time DESC LIMIT 80", (oid, factory))
             else:
                 cur.execute("SELECT * FROM visitor_passes WHERE org_id=%s ORDER BY entry_time DESC LIMIT 80", (oid,))
             rows = cur.fetchall()
-    return jsonify({"visitors": [_serialize_visitor(r) for r in rows], "rev": _ORG_REVISIONS[oid]["visitorRev"]})
+    return jsonify({"visitors": [_serialize_visitor(r, org_layers) for r in rows], "rev": _ORG_REVISIONS[oid]["visitorRev"]})
 
 
 @app.post("/api/public/visitors")
@@ -2261,10 +2529,11 @@ def api_list_visitors(conn, org, user):
     oid = org["id"]
     factory = str(request.args.get("factory") or "").strip()
     status = str(request.args.get("status") or "").strip()
+    org_layers = _get_org_security_layers(conn, oid)
     with conn.cursor() as cur:
         cur.execute("SELECT * FROM visitor_passes WHERE org_id=%s ORDER BY entry_time DESC LIMIT 300", (oid,))
         rows = cur.fetchall()
-    items = [_serialize_visitor(r) for r in rows]
+    items = [_serialize_visitor(r, org_layers) for r in rows]
     if factory:
         items = [v for v in items if not v["factory"] or v["factory"].casefold() == factory.casefold()]
     if status:
@@ -2324,18 +2593,29 @@ def api_visitor_decision(conn, org, user, vid):
             return jsonify({"error": f"Visitor already {v_row['status']}"}), 409
 
         actor_name = user.get("full_name") or user["username"]
+        updates = list(v_row.get("stay_updates") or [])
+        updates.append(
+            {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "actor": actor_name,
+                "action": "approved" if decision == "Approved" else "rejected",
+                "reason": reason if decision == "Rejected" else "",
+                "note": f"{decision} by {actor_name}" + (f" · {reason}" if reason else ""),
+            }
+        )
         cur.execute(
             """
             UPDATE visitor_passes
-               SET status=%s, approved_by=%s, approved_at=NOW(), rejected_reason=%s, updated_at=NOW()
+               SET status=%s, approved_by=%s, approved_at=NOW(), rejected_reason=%s, stay_updates=%s::jsonb, updated_at=NOW()
              WHERE id=%s AND org_id=%s
             RETURNING *
             """,
-            (decision, actor_name, reason if decision == "Rejected" else "", vid, oid),
+            (decision, actor_name, reason if decision == "Rejected" else "", json.dumps(updates[-50:]), vid, oid),
         )
         updated = cur.fetchone()
 
     users = _get_org_state(conn, oid, "manual_users", []) or []
+    org_layers = _get_org_security_layers(conn, oid)
     targets, tgt_dept, dept_bcast = resolve_notification_targets(
         users,
         target_username=updated.get("host_username") if (updated.get("host_username") or "").casefold() != user["username"].casefold() else "",
@@ -2365,40 +2645,136 @@ def api_visitor_decision(conn, org, user, vid):
     )
     _audit(conn, oid, user["username"], "visitor_decision", f"{vid} -> {decision}")
     _bump_rev(oid, "visitorRev")
-    return jsonify({"visitor": _serialize_visitor(updated)})
+    return jsonify({"visitor": _serialize_visitor(updated, org_layers)})
 
 
-@app.post("/api/visitors/<vid>/checkin")
-@auth_required("visitors", "rw")
-def api_visitor_checkin(conn, org, user, vid):
-    oid = org["id"]
+def _perform_visitor_checkin(conn, oid: str, v_row: dict, actor_name: str, actor_username: str, note: str = "", layer_id: str = ""):
+    vid = v_row["id"]
+    org_layers = _get_org_security_layers(conn, oid)
+    if v_row["status"] == "Pending":
+        return None, ("Visitor must be Approved first before Check In", 400)
+    if v_row["status"] == "Rejected":
+        return None, ("Cannot Check In a Rejected visitor", 400)
+    if v_row["status"] == "Checked Out":
+        return None, ("Visitor has already Checked Out", 409)
+    if v_row["status"] == "Checked In":
+        return {"visitor": _serialize_visitor(v_row, org_layers), "completedLayer": None, "nextLayer": None}, None
+
+    applicable, checkins, pending = _compute_visitor_gate_progress(v_row, org_layers)
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    updates = list(v_row.get("stay_updates") or [])
+    users = _get_org_state(conn, oid, "manual_users", []) or []
+
+    # Multi-layer intermediate gate checkpoint (remains 'Approved' until final security layer clears)
+    if len(pending) > 1:
+        target_layer = next((l for l in pending if l["id"] == layer_id), pending[0])
+        checkins.append(
+            {
+                "layerId": target_layer["id"],
+                "layerName": target_layer["name"],
+                "factory": target_layer["factory"],
+                "checkedInBy": actor_name,
+                "checkedInAt": now_iso,
+                "note": note,
+            }
+        )
+        remaining_after = [l for l in applicable if l["id"] not in {c.get("layerId") for c in checkins}]
+        next_layer = remaining_after[0] if remaining_after else None
+        updates.append(
+            {
+                "ts": now_iso,
+                "actor": actor_name,
+                "action": "gate_checkin",
+                "layerName": target_layer["name"],
+                "note": f"Cleared {target_layer['name']} ({len(checkins)}/{len(applicable)})" + (f" · {note}" if note else ""),
+            }
+        )
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE visitor_passes
+                   SET gate_checkins=%s::jsonb, stay_updates=%s::jsonb, updated_at=NOW()
+                 WHERE id=%s AND org_id=%s
+                RETURNING *
+                """,
+                (json.dumps(checkins), json.dumps(updates[-50:]), vid, oid),
+            )
+            updated = cur.fetchone()
+
+        targets, tgt_dept, dept_bcast = resolve_notification_targets(
+            users,
+            target_username=updated.get("host_username") or "",
+            target_department=updated.get("department") or "",
+            factory=updated.get("factory", ""),
+            include_security=True,
+            fallback_admin_if_no_security=False,
+        )
+        next_txt = f" — Next security check: {next_layer['name']}." if next_layer else ""
+        emit_notification(
+            conn,
+            org_id=oid,
+            kind="visitor_status",
+            level="info",
+            title=f"🛂 Gate Cleared ({len(checkins)}/{len(applicable)}): {updated['visitor_name']} ({vid})",
+            body=f"Cleared {target_layer['name']} by {actor_name}{next_txt}",
+            factory=updated.get("factory", ""),
+            target_department=tgt_dept,
+            target_usernames=targets,
+            dept_broadcast=dept_bcast,
+            target_view="visitors",
+            target_id=vid,
+            meta={"visitor_id": vid, "step": "GateCheck", "completedLayer": target_layer, "nextLayer": next_layer},
+        )
+        _audit(conn, oid, actor_username, "visitor_gate_checkin", f"Cleared layer {target_layer['name']} for {vid}")
+        _bump_rev(oid, "visitorRev")
+        return {"visitor": _serialize_visitor(updated, org_layers), "completedLayer": target_layer, "nextLayer": next_layer}, None
+
+    # Final gate layer (or single-step check-in) -> Checked In inside factory
+    completed_layer = pending[0] if pending else None
+    if completed_layer:
+        checkins.append(
+            {
+                "layerId": completed_layer["id"],
+                "layerName": completed_layer["name"],
+                "factory": completed_layer["factory"],
+                "checkedInBy": actor_name,
+                "checkedInAt": now_iso,
+                "note": note,
+            }
+        )
+    exp_mins = int(v_row.get("expected_duration_minutes") or 0)
+    exp_out = (now + timedelta(minutes=exp_mins)) if exp_mins > 0 else None
+    updates.append(
+        {
+            "ts": now_iso,
+            "actor": actor_name,
+            "action": "checked_in",
+            "layerName": completed_layer["name"] if completed_layer else "",
+            "note": (f"Checked In via {completed_layer['name']}" if completed_layer else "Checked In inside plant")
+            + (f" · Expected: {_format_duration_label(exp_mins)}" if exp_mins > 0 else "")
+            + (f" · {note}" if note else ""),
+        }
+    )
     with conn.cursor() as cur:
-        cur.execute("SELECT * FROM visitor_passes WHERE id=%s AND org_id=%s", (vid, oid))
-        v_row = cur.fetchone()
-        if not v_row:
-            return jsonify({"error": "Visitor pass not found"}), 404
-        if not _user_can_act_on_visitor(user, v_row):
-            return jsonify({"error": "Not authorized to check in this visitor"}), 403
-        if v_row["status"] == "Pending":
-            return jsonify({"error": "Visitor must be Approved first before Check In"}), 400
-        if v_row["status"] == "Rejected":
-            return jsonify({"error": "Cannot Check In a Rejected visitor"}), 400
-        if v_row["status"] == "Checked Out":
-            return jsonify({"error": "Visitor has already Checked Out"}), 409
-
-        actor_name = user.get("full_name") or user["username"]
         cur.execute(
             """
             UPDATE visitor_passes
-               SET status='Checked In', checked_in_by=%s, checked_in_at=COALESCE(checked_in_at, NOW()), updated_at=NOW()
+               SET status='Checked In',
+                   checked_in_by=%s,
+                   checked_in_at=COALESCE(checked_in_at, NOW()),
+                   expected_checkout_at=COALESCE(expected_checkout_at, %s),
+                   next_followup_at=COALESCE(next_followup_at, %s),
+                   gate_checkins=%s::jsonb,
+                   stay_updates=%s::jsonb,
+                   updated_at=NOW()
              WHERE id=%s AND org_id=%s
             RETURNING *
             """,
-            (actor_name, vid, oid),
+            (actor_name, exp_out, exp_out, json.dumps(checkins), json.dumps(updates[-50:]), vid, oid),
         )
         updated = cur.fetchone()
 
-    users = _get_org_state(conn, oid, "manual_users", []) or []
     targets, tgt_dept, dept_bcast = resolve_notification_targets(
         users,
         target_username=updated.get("host_username") or "",
@@ -2407,13 +2783,14 @@ def api_visitor_checkin(conn, org, user, vid):
         include_security=True,
         fallback_admin_if_no_security=False,
     )
+    dur_txt = f" · Expected duration: {_format_duration_label(exp_mins)}." if exp_mins > 0 else "."
     emit_notification(
         conn,
         org_id=oid,
         kind="visitor_status",
         level="info",
         title=f"Visitor Checked In: {updated['visitor_name']} ({vid})",
-        body=f"Meeting started / Checked In by {actor_name}.",
+        body=f"Meeting started / Entered plant · Checked In by {actor_name}{dur_txt}",
         factory=updated.get("factory", ""),
         target_department=tgt_dept,
         target_usernames=targets,
@@ -2422,36 +2799,63 @@ def api_visitor_checkin(conn, org, user, vid):
         target_id=vid,
         meta={"visitor_id": vid, "step": "Checked In"},
     )
-    _audit(conn, oid, user["username"], "visitor_checkin", f"Checked in {vid}")
+    _audit(conn, oid, actor_username, "visitor_checkin", f"Checked in {vid}")
     _bump_rev(oid, "visitorRev")
-    return jsonify({"visitor": _serialize_visitor(updated)})
+    return {"visitor": _serialize_visitor(updated, org_layers), "completedLayer": completed_layer, "nextLayer": None}, None
 
 
-@app.post("/api/visitors/<vid>/checkout")
-@auth_required("visitors", "rw")
-def api_visitor_checkout(conn, org, user, vid):
-    oid = org["id"]
+def _perform_visitor_checkout(conn, oid: str, v_row: dict, actor_name: str, actor_username: str, note: str = "", early_leave: bool = False):
+    vid = v_row["id"]
+    org_layers = _get_org_security_layers(conn, oid)
+    if v_row["status"] in ("Pending", "Rejected"):
+        return None, (f"Cannot Check Out a visitor with status '{v_row['status']}'", 400)
+    if v_row["status"] == "Checked Out":
+        return _serialize_visitor(v_row, org_layers), None
+
+    now = datetime.now(timezone.utc)
+    exp_mins = int(v_row.get("expected_duration_minutes") or 0)
+    exp_out = _parse_dt(v_row.get("expected_checkout_at"))
+    grace = timedelta(minutes=5 if exp_mins >= 30 else 1)
+
+    if v_row["status"] == "Approved":
+        checkout_type = "Left Before Check-In"
+    elif early_leave:
+        checkout_type = "Early Leave"
+    elif exp_out and now < exp_out - grace:
+        checkout_type = "Early Leave"
+    elif exp_out and now > exp_out + grace:
+        checkout_type = "Extended / Overstay"
+    else:
+        checkout_type = "On Time"
+
+    clean_note = str(note or "").strip()
+    updates = list(v_row.get("stay_updates") or [])
+    updates.append(
+        {
+            "ts": now.isoformat(),
+            "actor": actor_name,
+            "action": "checked_out",
+            "checkoutType": checkout_type,
+            "reason": clean_note,
+            "note": f"Checked Out ({checkout_type}) by {actor_name}" + (f" · {clean_note}" if clean_note else ""),
+        }
+    )
     with conn.cursor() as cur:
-        cur.execute("SELECT * FROM visitor_passes WHERE id=%s AND org_id=%s", (vid, oid))
-        v_row = cur.fetchone()
-        if not v_row:
-            return jsonify({"error": "Visitor pass not found"}), 404
-        if not _user_can_act_on_visitor(user, v_row):
-            return jsonify({"error": "Not authorized to check out this visitor"}), 403
-        if v_row["status"] in ("Pending", "Rejected"):
-            return jsonify({"error": f"Cannot Check Out a visitor with status '{v_row['status']}'"}), 400
-        if v_row["status"] == "Checked Out":
-            return jsonify({"visitor": _serialize_visitor(v_row)})
-
-        actor_name = user.get("full_name") or user["username"]
         cur.execute(
             """
             UPDATE visitor_passes
-               SET status='Checked Out', checked_out_by=%s, checked_out_at=NOW(), updated_at=NOW()
+               SET status='Checked Out',
+                   checked_out_by=%s,
+                   checked_out_at=NOW(),
+                   next_followup_at=NULL,
+                   checkout_type=%s,
+                   checkout_note=%s,
+                   stay_updates=%s::jsonb,
+                   updated_at=NOW()
              WHERE id=%s AND org_id=%s
             RETURNING *
             """,
-            (actor_name, vid, oid),
+            (actor_name, checkout_type, clean_note, json.dumps(updates[-50:]), vid, oid),
         )
         updated = cur.fetchone()
 
@@ -2469,19 +2873,185 @@ def api_visitor_checkout(conn, org, user, vid):
         org_id=oid,
         kind="visitor_status",
         level="success",
-        title=f"Visitor Checked Out: {updated['visitor_name']} ({vid})",
-        body=f"Visit completed & exited · Recorded by {actor_name}.",
+        title=f"Visitor Checked Out ({checkout_type}): {updated['visitor_name']} ({vid})",
+        body=f"Visit completed & exited · Recorded by {actor_name}" + (f" · Note: {clean_note}" if clean_note else ""),
         factory=updated.get("factory", ""),
         target_department=tgt_dept,
         target_usernames=targets,
         dept_broadcast=dept_bcast,
         target_view="visitors",
         target_id=vid,
-        meta={"visitor_id": vid, "step": "Checked Out"},
+        meta={"visitor_id": vid, "step": "Checked Out", "checkoutType": checkout_type},
     )
-    _audit(conn, oid, user["username"], "visitor_checkout", f"Checked out {vid}")
+    _audit(conn, oid, actor_username, "visitor_checkout", f"Checked out {vid} ({checkout_type})")
     _bump_rev(oid, "visitorRev")
-    return jsonify({"visitor": _serialize_visitor(updated)})
+    return _serialize_visitor(updated, org_layers), None
+
+
+def _mark_visitor_stay_notifs_read(conn, oid: str, vid: str, username: str) -> None:
+    uname_cf = username.casefold()
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id, read_by FROM notification_events WHERE org_id=%s AND target_id=%s AND kind='visitor_stay_check'",
+            (oid, vid),
+        )
+        for nrow in (cur.fetchall() or []):
+            rb = list(dict.fromkeys([*(nrow.get("read_by") or []), uname_cf]))
+            cur.execute("UPDATE notification_events SET read_by=%s::jsonb WHERE id=%s AND org_id=%s", (json.dumps(rb), nrow["id"], oid))
+
+
+@app.post("/api/visitors/<vid>/checkin")
+@auth_required("visitors", "rw")
+def api_visitor_checkin(conn, org, user, vid):
+    oid = org["id"]
+    data = request.get_json(silent=True) or {}
+    with conn.cursor() as cur:
+        cur.execute("SELECT * FROM visitor_passes WHERE id=%s AND org_id=%s", (vid, oid))
+        v_row = cur.fetchone()
+    if not v_row:
+        return jsonify({"error": "Visitor pass not found"}), 404
+    if not _user_can_act_on_visitor(user, v_row):
+        return jsonify({"error": "Not authorized to check in this visitor"}), 403
+    actor_name = user.get("full_name") or user["username"]
+    result, err = _perform_visitor_checkin(
+        conn,
+        oid,
+        v_row,
+        actor_name,
+        user["username"],
+        note=str(data.get("note") or "").strip(),
+        layer_id=str(data.get("layerId") or "").strip(),
+    )
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    return jsonify(result)
+
+
+@app.post("/api/visitors/<vid>/checkout")
+@auth_required("visitors", "rw")
+def api_visitor_checkout(conn, org, user, vid):
+    oid = org["id"]
+    data = request.get_json(silent=True) or {}
+    with conn.cursor() as cur:
+        cur.execute("SELECT * FROM visitor_passes WHERE id=%s AND org_id=%s", (vid, oid))
+        v_row = cur.fetchone()
+    if not v_row:
+        return jsonify({"error": "Visitor pass not found"}), 404
+    if not _user_can_act_on_visitor(user, v_row):
+        return jsonify({"error": "Not authorized to check out this visitor"}), 403
+    actor_name = user.get("full_name") or user["username"]
+    vis, err = _perform_visitor_checkout(
+        conn,
+        oid,
+        v_row,
+        actor_name,
+        user["username"],
+        note=str(data.get("note") or data.get("reason") or "").strip(),
+        early_leave=bool(data.get("earlyLeave")),
+    )
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    _mark_visitor_stay_notifs_read(conn, oid, vid, user["username"])
+    _bump_rev(oid, "notifRev", usernames=[user["username"]])
+    return jsonify({"visitor": vis})
+
+
+@app.post("/api/visitors/<vid>/stay-response")
+@auth_required("visitors", "rw")
+def api_visitor_stay_response(conn, org, user, vid):
+    """Direct reply from WhatsApp-style notification bar, inbox, or visitor row."""
+    oid = org["id"]
+    data = request.get_json(silent=True) or {}
+    action = str(data.get("action") or "still_inside").strip().lower()
+    reason = str(data.get("reason") or data.get("reply") or data.get("note") or "").strip()
+    try:
+        extend_mins = max(5, min(480, int(data.get("extendMinutes") or data.get("extend_minutes") or 30)))
+    except (ValueError, TypeError):
+        extend_mins = 30
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT * FROM visitor_passes WHERE id=%s AND org_id=%s", (vid, oid))
+        v_row = cur.fetchone()
+    if not v_row:
+        return jsonify({"error": "Visitor pass not found"}), 404
+    if not _user_can_act_on_visitor(user, v_row):
+        return jsonify({"error": "Not authorized to update this visitor"}), 403
+
+    actor_name = user.get("full_name") or user["username"]
+    if action in ("left", "checkout", "early_leave"):
+        vis, err = _perform_visitor_checkout(
+            conn,
+            oid,
+            v_row,
+            actor_name,
+            user["username"],
+            note=reason or ("Left early (confirmed via alert)" if action == "early_leave" else "Marked left via stay check"),
+            early_leave=(action == "early_leave" or bool(data.get("earlyLeave"))),
+        )
+        if err:
+            return jsonify({"error": err[0]}), err[1]
+        _mark_visitor_stay_notifs_read(conn, oid, vid, user["username"])
+        _bump_rev(oid, "notifRev", usernames=[user["username"]])
+        return jsonify({"visitor": vis, "action": "checked_out"})
+
+    if v_row["status"] != "Checked In":
+        return jsonify({"error": f"Visitor status is '{v_row['status']}', cannot extend stay"}), 409
+
+    final_reason = reason or "Work / meeting still in progress"
+    now = datetime.now(timezone.utc)
+    next_at = now + timedelta(minutes=extend_mins)
+    updates = list(v_row.get("stay_updates") or [])
+    updates.append(
+        {
+            "ts": now.isoformat(),
+            "actor": actor_name,
+            "action": "still_inside",
+            "reason": final_reason,
+            "extendMinutes": extend_mins,
+            "note": f"Still Inside (+{extend_mins}m) by {actor_name} · Reason: {final_reason}",
+        }
+    )
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE visitor_passes
+               SET overstay_reason=%s, next_followup_at=%s, stay_updates=%s::jsonb, updated_at=NOW()
+             WHERE id=%s AND org_id=%s
+            RETURNING *
+            """,
+            (final_reason, next_at, json.dumps(updates[-50:]), vid, oid),
+        )
+        updated = cur.fetchone()
+
+    _mark_visitor_stay_notifs_read(conn, oid, vid, user["username"])
+    users = _get_org_state(conn, oid, "manual_users", []) or []
+    org_layers = _get_org_security_layers(conn, oid)
+    targets, tgt_dept, dept_bcast = resolve_notification_targets(
+        users,
+        target_username=updated.get("host_username") or "",
+        target_department=updated.get("department") or "",
+        factory=updated.get("factory") or "",
+        include_security=True,
+        fallback_admin_if_no_security=False,
+    )
+    emit_notification(
+        conn,
+        org_id=oid,
+        kind="visitor_status",
+        level="info",
+        title=f"⏳ Stay Extended (+{extend_mins}m): {updated['visitor_name']} ({vid})",
+        body=f"Confirmed still inside by {actor_name} · Reason: {final_reason}",
+        factory=updated.get("factory") or "",
+        target_department=tgt_dept,
+        target_usernames=targets,
+        dept_broadcast=dept_bcast,
+        target_view="visitors",
+        target_id=vid,
+        meta={"visitor_id": vid, "step": "StayExtended", "reason": final_reason, "extendMinutes": extend_mins},
+    )
+    _audit(conn, oid, user["username"], "visitor_stay_extend", f"{vid} +{extend_mins}m: {final_reason}")
+    _bump_rev(oid, "visitorRev", "notifRev")
+    return jsonify({"visitor": _serialize_visitor(updated, org_layers), "action": "extended"})
 
 
 def _delete_org_media_urls(org_id: str, urls: list[str]) -> None:
@@ -2554,23 +3124,19 @@ def api_public_visitor_kiosk_action(vid):
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM visitor_passes WHERE id=%s AND org_id=%s", (vid, oid))
             v_row = cur.fetchone()
-            if not v_row:
-                return jsonify({"error": "Visitor pass not found"}), 404
-            if v_row["status"] in ("Pending", "Rejected"):
-                return jsonify({"error": "Host approval is required first before gate check-in / check-out"}), 400
-            if action == "checkin" and v_row["status"] == "Approved":
-                cur.execute(
-                    "UPDATE visitor_passes SET status='Checked In', checked_in_by='Gate Kiosk', checked_in_at=NOW(), updated_at=NOW() WHERE id=%s AND org_id=%s RETURNING *",
-                    (vid, oid),
-                )
-            else:
-                cur.execute(
-                    "UPDATE visitor_passes SET status='Checked Out', checked_out_by='Gate Kiosk', checked_out_at=NOW(), updated_at=NOW() WHERE id=%s AND org_id=%s RETURNING *",
-                    (vid, oid),
-                )
-            updated = cur.fetchone()
-    _bump_rev(oid, "visitorRev")
-    return jsonify({"visitor": _serialize_visitor(updated)})
+        if not v_row:
+            return jsonify({"error": "Visitor pass not found"}), 404
+        if v_row["status"] in ("Pending", "Rejected"):
+            return jsonify({"error": "Host approval is required first before gate check-in / check-out"}), 400
+        if action == "checkin" and v_row["status"] == "Approved":
+            result, act_err = _perform_visitor_checkin(conn, oid, v_row, "Gate Kiosk", "Gate Kiosk")
+            if act_err:
+                return jsonify({"error": act_err[0]}), act_err[1]
+            return jsonify(result)
+        vis, act_err = _perform_visitor_checkout(conn, oid, v_row, "Gate Kiosk", "Gate Kiosk", note=str(data.get("note") or "").strip())
+        if act_err:
+            return jsonify({"error": act_err[0]}), act_err[1]
+        return jsonify({"visitor": vis})
 
 
 @app.post("/api/visitors/<vid>/photos")
@@ -2612,8 +3178,9 @@ def _append_visitor_photos(conn, oid: str, vid: str, data: dict):
             (json.dumps(merged), primary, vid, oid),
         )
         updated = cur.fetchone()
+    org_layers = _get_org_security_layers(conn, oid)
     _bump_rev(oid, "visitorRev")
-    return jsonify({"visitor": _serialize_visitor(updated)})
+    return jsonify({"visitor": _serialize_visitor(updated, org_layers)})
 
 
 # ---------------------------------------------------------------------------
@@ -3130,7 +3697,8 @@ def api_live_stream(conn, org, user):
 def api_notif_sounds(conn, org, user):
     oid = org["id"]
     if request.method == "GET":
-        global_cfg = _get_org_state(conn, oid, "sound_config", dict(DEFAULT_SOUND_CONFIG)) or dict(DEFAULT_SOUND_CONFIG)
+        raw_global = _get_org_state(conn, oid, "sound_config", dict(DEFAULT_SOUND_CONFIG)) or {}
+        global_cfg = {**DEFAULT_SOUND_CONFIG, **raw_global}
         with conn.cursor() as cur:
             cur.execute("SELECT prefs FROM user_notification_prefs WHERE org_id=%s AND username=%s", (oid, user["username"]))
             row = cur.fetchone()
@@ -3138,9 +3706,11 @@ def api_notif_sounds(conn, org, user):
 
     data = request.get_json(silent=True) or {}
     scope = str(data.get("scope") or ("global" if user["role"] == "Administrator" and data.get("applyGlobal") else "user"))
+    allowed_keys = ("enabled", "desktop_notifications", "volume", "visitor_entry", "visitor_status", "visitor_stay_check", "material_entry", "material_overdue", "quiet_hours")
     if scope == "global" and user["role"] == "Administrator":
-        cur_cfg = _get_org_state(conn, oid, "sound_config", dict(DEFAULT_SOUND_CONFIG)) or dict(DEFAULT_SOUND_CONFIG)
-        for k in ("enabled", "desktop_notifications", "volume", "visitor_entry", "visitor_status", "material_entry", "material_overdue", "quiet_hours"):
+        raw_cur = _get_org_state(conn, oid, "sound_config", dict(DEFAULT_SOUND_CONFIG)) or {}
+        cur_cfg = {**DEFAULT_SOUND_CONFIG, **raw_cur}
+        for k in allowed_keys:
             if k in data:
                 cur_cfg[k] = data[k]
         _set_org_state(conn, oid, "sound_config", cur_cfg)
@@ -3151,7 +3721,7 @@ def api_notif_sounds(conn, org, user):
         cur.execute("SELECT prefs FROM user_notification_prefs WHERE org_id=%s AND username=%s", (oid, user["username"]))
         row = cur.fetchone()
         prefs = dict(row["prefs"]) if row and isinstance(row["prefs"], dict) else {}
-        for k in ("enabled", "desktop_notifications", "volume", "visitor_entry", "visitor_status", "material_entry", "material_overdue", "quiet_hours"):
+        for k in allowed_keys:
             if k in data:
                 prefs[k] = data[k]
         cur.execute(
@@ -3250,9 +3820,10 @@ def api_org_list_backups(conn, org, user):
 @auth_required("backups", "ro")
 def api_org_export_json(conn, org, user):
     oid = org["id"]
+    org_layers = _get_org_security_layers(conn, oid)
     with conn.cursor() as cur:
         cur.execute("SELECT * FROM visitor_passes WHERE org_id=%s ORDER BY entry_time DESC", (oid,))
-        vs = [_serialize_visitor(r) for r in (cur.fetchall() or [])]
+        vs = [_serialize_visitor(r, org_layers) for r in (cur.fetchall() or [])]
         cur.execute("SELECT * FROM material_gate_passes WHERE org_id=%s ORDER BY entry_time DESC", (oid,))
         gs = [_serialize_gatepass(r) for r in (cur.fetchall() or [])]
     payload = {
@@ -3306,9 +3877,10 @@ def _prepare_export_bundle(
         return imgs, links
 
     if scope in ("all", "visitors"):
+        org_layers = _get_org_security_layers(conn, oid)
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM visitor_passes WHERE org_id=%s ORDER BY entry_time DESC", (oid,))
-            v_items = [_serialize_visitor(r) for r in (cur.fetchall() or [])]
+            v_items = [_serialize_visitor(r, org_layers) for r in (cur.fetchall() or [])]
         if factory:
             v_items = [v for v in v_items if not v["factory"] or v["factory"].casefold() == factory.casefold()]
         if status_filter and status_filter != "all":
@@ -3328,6 +3900,12 @@ def _prepare_export_bundle(
             link_cell_1 = {"hyperlink": all_links[0][0], "label": all_links[0][1]} if len(all_links) >= 1 else ""
             link_cell_2 = {"hyperlink": all_links[1][0], "label": all_links[1][1]} if len(all_links) >= 2 else ""
             extra_summary = ", ".join(lbl for _, lbl in all_links) if all_links else "No photos"
+            gate_steps_txt = " -> ".join(
+                f"{g.get('layerName','Gate')} ({g.get('checkedInBy','')})" for g in (v.get("gateCheckins") or [])
+            )
+            checkout_info = v.get("checkoutType") or ""
+            if v.get("checkoutNote"):
+                checkout_info = f"{checkout_info}: {v['checkoutNote']}" if checkout_info else v["checkoutNote"]
             v_rows.append(
                 {
                     "cells": [
@@ -3350,6 +3928,10 @@ def _prepare_export_bundle(
                         link_cell_1,
                         link_cell_2,
                         extra_summary,
+                        v.get("expectedDurationLabel") or "",
+                        gate_steps_txt,
+                        v.get("overstayReason") or "",
+                        checkout_info,
                     ],
                     "images": row_imgs,
                 }
@@ -3362,8 +3944,9 @@ def _prepare_export_bundle(
                     "Vehicle No", "Factory", "Department", "Whom to Meet", "Approved By / Time",
                     "Checked In By / Time", "Checked Out By / Time",
                     "Selfie Photo", "ID Card Photo", "Photo/Doc Link 1", "Photo/Doc Link 2", "All Files",
+                    "Expected Duration", "Gate Check-Ins", "Overstay Reason", "Checkout Type & Note",
                 ],
-                "col_widths": [20, 14, 22, 22, 15, 20, 22, 15, 13, 16, 20, 26, 26, 26, 16, 16, 26, 26, 30],
+                "col_widths": [20, 14, 22, 22, 15, 20, 22, 15, 13, 16, 20, 26, 26, 26, 16, 16, 26, 26, 30, 18, 30, 28, 28],
                 "rows": v_rows,
             }
         )

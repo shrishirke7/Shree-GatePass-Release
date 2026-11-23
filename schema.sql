@@ -57,6 +57,17 @@ CREATE TABLE IF NOT EXISTS visitor_passes (
     checked_out_at TIMESTAMPTZ,
     rejected_reason TEXT NOT NULL DEFAULT '',
     notes TEXT NOT NULL DEFAULT '',
+    expected_duration_minutes INTEGER NOT NULL DEFAULT 0,
+    expected_duration_label TEXT NOT NULL DEFAULT '',
+    expected_checkout_at TIMESTAMPTZ,
+    next_followup_at TIMESTAMPTZ,
+    reminder_count INTEGER NOT NULL DEFAULT 0,
+    last_reminder_at TIMESTAMPTZ,
+    overstay_reason TEXT NOT NULL DEFAULT '',
+    stay_updates JSONB NOT NULL DEFAULT '[]'::jsonb,
+    checkout_type TEXT NOT NULL DEFAULT '',
+    checkout_note TEXT NOT NULL DEFAULT '',
+    gate_checkins JSONB NOT NULL DEFAULT '[]'::jsonb,
     created_by TEXT NOT NULL DEFAULT 'Gate Kiosk',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -134,8 +145,19 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     meta JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 
--- Safe schema upgrades when updating from single-tenant Shree GatePass
+-- Safe schema upgrades when updating from single-tenant or earlier Shree GatePass
 ALTER TABLE visitor_passes ADD COLUMN IF NOT EXISTS org_id TEXT NOT NULL DEFAULT 'org-default';
+ALTER TABLE visitor_passes ADD COLUMN IF NOT EXISTS expected_duration_minutes INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE visitor_passes ADD COLUMN IF NOT EXISTS expected_duration_label TEXT NOT NULL DEFAULT '';
+ALTER TABLE visitor_passes ADD COLUMN IF NOT EXISTS expected_checkout_at TIMESTAMPTZ;
+ALTER TABLE visitor_passes ADD COLUMN IF NOT EXISTS next_followup_at TIMESTAMPTZ;
+ALTER TABLE visitor_passes ADD COLUMN IF NOT EXISTS reminder_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE visitor_passes ADD COLUMN IF NOT EXISTS last_reminder_at TIMESTAMPTZ;
+ALTER TABLE visitor_passes ADD COLUMN IF NOT EXISTS overstay_reason TEXT NOT NULL DEFAULT '';
+ALTER TABLE visitor_passes ADD COLUMN IF NOT EXISTS stay_updates JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE visitor_passes ADD COLUMN IF NOT EXISTS checkout_type TEXT NOT NULL DEFAULT '';
+ALTER TABLE visitor_passes ADD COLUMN IF NOT EXISTS checkout_note TEXT NOT NULL DEFAULT '';
+ALTER TABLE visitor_passes ADD COLUMN IF NOT EXISTS gate_checkins JSONB NOT NULL DEFAULT '[]'::jsonb;
 ALTER TABLE material_gate_passes ADD COLUMN IF NOT EXISTS org_id TEXT NOT NULL DEFAULT 'org-default';
 ALTER TABLE notification_events ADD COLUMN IF NOT EXISTS org_id TEXT NOT NULL DEFAULT 'org-default';
 ALTER TABLE user_notification_prefs ADD COLUMN IF NOT EXISTS org_id TEXT NOT NULL DEFAULT 'org-default';
@@ -157,6 +179,7 @@ END $$;
 CREATE INDEX IF NOT EXISTS idx_gp_orgs_slug ON organizations (slug);
 CREATE INDEX IF NOT EXISTS idx_gp_visitors_org_status_time ON visitor_passes (org_id, status, entry_time DESC);
 CREATE INDEX IF NOT EXISTS idx_gp_visitors_dept ON visitor_passes (org_id, department, host_username);
+CREATE INDEX IF NOT EXISTS idx_gp_visitors_followup ON visitor_passes (org_id, status, expected_duration_minutes, next_followup_at);
 CREATE INDEX IF NOT EXISTS idx_gp_material_org_dir_time ON material_gate_passes (org_id, direction, entry_time DESC);
 CREATE INDEX IF NOT EXISTS idx_gp_material_returnable ON material_gate_passes (org_id, is_returnable, returned_at, expected_return_at);
 CREATE INDEX IF NOT EXISTS idx_gp_notif_org_ts ON notification_events (org_id, ts DESC);

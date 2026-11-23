@@ -172,7 +172,7 @@ public class AlertMonitorService extends Service {
             String body = latest.optString("body", "New Visitor or Material update");
             String targetView = latest.optString("targetView", "visitors");
             String targetId = latest.optString("targetId", "");
-            NotificationHelper.showAlert(this, title, body, targetView, targetId);
+            NotificationHelper.showAlert(this, title, body, targetView, targetId, kind);
         } catch (Exception ignored) {
         }
     }
