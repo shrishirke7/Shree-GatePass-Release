@@ -260,7 +260,42 @@ DEFAULT_SETTINGS = {
     "font_size": "14px",
     "auto_checkout_hours": 0,
     "default_returnable_days": 7,
+    "portal_visitor_enabled": True,
+    "portal_material_enabled": True,
 }
+
+
+def _coerce_bool(val, default: bool = True) -> bool:
+    if val is None:
+        return default
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        low = val.strip().lower()
+        if low in ("false", "0", "no", "off", ""):
+            return False
+        if low in ("true", "1", "yes", "on"):
+            return True
+    return bool(val)
+
+
+def _portal_modules_from_settings(settings: dict | None) -> tuple[bool, bool]:
+    s = settings if isinstance(settings, dict) else {}
+    v_on = _coerce_bool(s.get("portal_visitor_enabled"), True) if "portal_visitor_enabled" in s else True
+    m_on = _coerce_bool(s.get("portal_material_enabled"), True) if "portal_material_enabled" in s else True
+    return v_on, m_on
+
+
+def _check_public_portal_module(conn, org_id: str, module: str) -> tuple[str, int] | None:
+    settings = _get_org_state(conn, org_id, "settings", dict(DEFAULT_SETTINGS)) or dict(DEFAULT_SETTINGS)
+    v_on, m_on = _portal_modules_from_settings(settings)
+    if module == "visitor" and not v_on:
+        return ("Visitor Pass is disabled on the public Gate Kiosk", 403)
+    if module == "material" and not m_on:
+        return ("Material Gate Pass is disabled on the public Gate Kiosk", 403)
+    if module == "any" and not (v_on or m_on):
+        return ("Public Gate Kiosk modules are disabled", 403)
+    return None
 
 DEFAULT_SOUND_CONFIG = {
     "enabled": True,
@@ -1087,11 +1122,17 @@ def api_setup_status():
         cur.execute("SELECT id, slug, name, logo_url, portal_title, status, expires_at FROM organizations ORDER BY created_at ASC")
         orgs = cur.fetchall() or []
 
-    matched_org = None
-    if org_hint:
-        matched_org = next((o for o in orgs if o["slug"].lower() == org_hint.lower() or o["id"] == org_hint), None)
-    elif len(orgs) == 1:
-        matched_org = orgs[0]
+        matched_org = None
+        if org_hint:
+            matched_org = next((o for o in orgs if o["slug"].lower() == org_hint.lower() or o["id"] == org_hint), None)
+        elif len(orgs) == 1:
+            matched_org = orgs[0]
+
+        portal_mods = {"visitor": True, "material": True}
+        if matched_org:
+            m_settings = _get_org_state(conn, matched_org["id"], "settings", dict(DEFAULT_SETTINGS)) or dict(DEFAULT_SETTINGS)
+            v_on, m_on = _portal_modules_from_settings(m_settings)
+            portal_mods = {"visitor": v_on, "material": m_on}
 
     return jsonify(
         {
@@ -1100,6 +1141,7 @@ def api_setup_status():
             "orgCount": len(orgs),
             "company": matched_org["name"] if matched_org else "Shree GatePass",
             "org": _serialize_org(matched_org) if matched_org else None,
+            "portalModules": portal_mods,
         }
     )
 
@@ -1680,7 +1722,11 @@ def api_data(conn, org, user):
     departments = _get_org_state(conn, oid, "departments", None)
     if departments is None:
         departments = list(DEFAULT_DEPARTMENTS)
-    settings = _get_org_state(conn, oid, "settings", dict(DEFAULT_SETTINGS)) or dict(DEFAULT_SETTINGS)
+    raw_settings = _get_org_state(conn, oid, "settings", dict(DEFAULT_SETTINGS)) or {}
+    settings = {**DEFAULT_SETTINGS, **raw_settings}
+    v_on, m_on = _portal_modules_from_settings(settings)
+    settings["portal_visitor_enabled"] = v_on
+    settings["portal_material_enabled"] = m_on
     sound_cfg = _get_org_state(conn, oid, "sound_config", dict(DEFAULT_SOUND_CONFIG)) or dict(DEFAULT_SOUND_CONFIG)
     raw_users = _get_org_state(conn, oid, "manual_users", []) or []
     directory = [
@@ -1921,10 +1967,20 @@ def api_save_factories(conn, org, user):
 def api_save_settings(conn, org, user):
     oid = org["id"]
     data = request.get_json(silent=True) or {}
-    cur_set = _get_org_state(conn, oid, "settings", dict(DEFAULT_SETTINGS)) or dict(DEFAULT_SETTINGS)
+    raw_cur = _get_org_state(conn, oid, "settings", dict(DEFAULT_SETTINGS)) or {}
+    cur_set = {**DEFAULT_SETTINGS, **raw_cur}
     for k in ("company", "site_name", "portal_title", "font_family", "font_size", "auto_checkout_hours", "default_returnable_days"):
         if k in data:
             cur_set[k] = data[k]
+    cur_v, cur_m = _portal_modules_from_settings(cur_set)
+    v_raw = data.get("portal_visitor_enabled", data.get("portalVisitorEnabled"))
+    m_raw = data.get("portal_material_enabled", data.get("portalMaterialEnabled"))
+    v_enabled = _coerce_bool(v_raw, cur_v) if ("portal_visitor_enabled" in data or "portalVisitorEnabled" in data) else cur_v
+    m_enabled = _coerce_bool(m_raw, cur_m) if ("portal_material_enabled" in data or "portalMaterialEnabled" in data) else cur_m
+    if not v_enabled and not m_enabled:
+        return jsonify({"error": "Select at least one Gate Kiosk module (Visitor Pass or Material Entry)"}), 400
+    cur_set["portal_visitor_enabled"] = v_enabled
+    cur_set["portal_material_enabled"] = m_enabled
     _set_org_state(conn, oid, "settings", cur_set)
     with conn.cursor() as cur:
         cur.execute(
@@ -1966,7 +2022,9 @@ def api_public_portal_options():
         departments = _get_org_state(conn, oid, "departments", None)
         if departments is None:
             departments = list(DEFAULT_DEPARTMENTS)
-        settings = _get_org_state(conn, oid, "settings", dict(DEFAULT_SETTINGS)) or dict(DEFAULT_SETTINGS)
+        raw_settings = _get_org_state(conn, oid, "settings", dict(DEFAULT_SETTINGS)) or {}
+        settings = {**DEFAULT_SETTINGS, **raw_settings}
+        v_on, m_on = _portal_modules_from_settings(settings)
         users = _get_org_state(conn, oid, "manual_users", []) or []
     employees = [
         {
@@ -1987,6 +2045,10 @@ def api_public_portal_options():
             "logoUrl": org.get("logo_url", ""),
             "portalTitle": settings.get("portal_title") or org.get("portal_title", "Security Gate · Visitor & Material Entry"),
             "defaultReturnableDays": int(settings.get("default_returnable_days", 7) or 7),
+            "portalVisitorEnabled": v_on,
+            "portalMaterialEnabled": m_on,
+            "portalModules": {"visitor": v_on, "material": m_on},
+            "dataRev": _ORG_REVISIONS[oid]["dataRev"],
             "factories": factories,
             "factoryOrder": order,
             "departments": departments,
@@ -2011,11 +2073,16 @@ def _save_uploaded_photo_file(org_id: str, file_storage, prefix: str = "gate") -
 @app.post("/api/public/gate-media")
 def api_public_upload_gate_media():
     ensure_db_ready()
+    kind_raw = str(request.form.get("kind") or "gate").strip().lower()
     with get_conn() as conn:
         org, err = _resolve_public_org(conn, request.form.get("orgSlug") or request.form.get("org") or "")
         if err:
             return jsonify({"error": err[0], "needOrg": err[2]}), err[1]
         oid = org["id"]
+        mod_check = "visitor" if kind_raw.startswith("v") else ("material" if kind_raw.startswith("m") else "any")
+        mod_err = _check_public_portal_module(conn, oid, mod_check)
+        if mod_err:
+            return jsonify({"error": mod_err[0]}), mod_err[1]
     files = request.files.getlist("files") or request.files.getlist("file") or list(request.files.values())
     if not files:
         return jsonify({"error": "No image or document files attached"}), 400
@@ -2159,6 +2226,9 @@ def api_public_list_visitors():
         if err:
             return jsonify({"error": err[0], "needOrg": err[2]}), err[1]
         oid = org["id"]
+        mod_err = _check_public_portal_module(conn, oid, "visitor")
+        if mod_err:
+            return jsonify({"error": mod_err[0]}), mod_err[1]
         with conn.cursor() as cur:
             if factory:
                 cur.execute("SELECT * FROM visitor_passes WHERE org_id=%s AND factory=%s ORDER BY entry_time DESC LIMIT 80", (oid, factory))
@@ -2176,6 +2246,9 @@ def api_public_create_visitor():
         org, err = _resolve_public_org(conn, str(data.get("orgSlug") or data.get("org_slug") or ""))
         if err:
             return jsonify({"error": err[0], "needOrg": err[2]}), err[1]
+        mod_err = _check_public_portal_module(conn, org["id"], "visitor")
+        if mod_err:
+            return jsonify({"error": mod_err[0]}), mod_err[1]
         created, create_err = _create_visitor_pass(conn, org["id"], data, "Gate Kiosk")
         if create_err:
             return jsonify({"error": create_err[0]}), create_err[1]
@@ -2213,7 +2286,11 @@ def api_create_visitor(conn, org, user):
 
 def _user_can_act_on_visitor(user: dict, v_row: dict) -> bool:
     role = user.get("role", "")
-    if role in ("Administrator", "Security Gate") or user.get("gate_scope") == "security":
+    if role == "Administrator":
+        return True
+    if user.get("perms", {}).get("visitors", "none") != "rw":
+        return False
+    if role == "Security Gate" or user.get("gate_scope") == "security":
         return True
     uname = user["username"].casefold()
     host = str(v_row.get("host_username") or "").strip().casefold()
@@ -2223,11 +2300,11 @@ def _user_can_act_on_visitor(user: dict, v_row: dict) -> bool:
     vdept = str(v_row.get("department") or "").strip().casefold()
     if (not host) and udept and vdept and udept == vdept:
         return True
-    return user.get("perms", {}).get("visitors") == "rw"
+    return True
 
 
 @app.post("/api/visitors/<vid>/decision")
-@auth_required()
+@auth_required("visitors", "rw")
 def api_visitor_decision(conn, org, user, vid):
     oid = org["id"]
     data = request.get_json(silent=True) or {}
@@ -2292,7 +2369,7 @@ def api_visitor_decision(conn, org, user, vid):
 
 
 @app.post("/api/visitors/<vid>/checkin")
-@auth_required()
+@auth_required("visitors", "rw")
 def api_visitor_checkin(conn, org, user, vid):
     oid = org["id"]
     with conn.cursor() as cur:
@@ -2351,7 +2428,7 @@ def api_visitor_checkin(conn, org, user, vid):
 
 
 @app.post("/api/visitors/<vid>/checkout")
-@auth_required()
+@auth_required("visitors", "rw")
 def api_visitor_checkout(conn, org, user, vid):
     oid = org["id"]
     with conn.cursor() as cur:
@@ -2471,6 +2548,9 @@ def api_public_visitor_kiosk_action(vid):
         if err:
             return jsonify({"error": err[0], "needOrg": err[2]}), err[1]
         oid = org["id"]
+        mod_err = _check_public_portal_module(conn, oid, "visitor")
+        if mod_err:
+            return jsonify({"error": mod_err[0]}), mod_err[1]
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM visitor_passes WHERE id=%s AND org_id=%s", (vid, oid))
             v_row = cur.fetchone()
@@ -2507,6 +2587,9 @@ def api_public_append_visitor_photos(vid):
         org, err = _resolve_public_org(conn, str(data.get("orgSlug") or data.get("org_slug") or ""))
         if err:
             return jsonify({"error": err[0], "needOrg": err[2]}), err[1]
+        mod_err = _check_public_portal_module(conn, org["id"], "visitor")
+        if mod_err:
+            return jsonify({"error": mod_err[0]}), mod_err[1]
         return _append_visitor_photos(conn, org["id"], vid, data)
 
 
@@ -2677,6 +2760,9 @@ def api_public_list_gate_passes():
         if err:
             return jsonify({"error": err[0], "needOrg": err[2]}), err[1]
         oid = org["id"]
+        mod_err = _check_public_portal_module(conn, oid, "material")
+        if mod_err:
+            return jsonify({"error": mod_err[0]}), mod_err[1]
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM material_gate_passes WHERE org_id=%s ORDER BY entry_time DESC LIMIT 80", (oid,))
             rows = cur.fetchall()
@@ -2691,6 +2777,9 @@ def api_public_create_gate_pass():
         org, err = _resolve_public_org(conn, str(data.get("orgSlug") or data.get("org_slug") or ""))
         if err:
             return jsonify({"error": err[0], "needOrg": err[2]}), err[1]
+        mod_err = _check_public_portal_module(conn, org["id"], "material")
+        if mod_err:
+            return jsonify({"error": mod_err[0]}), mod_err[1]
         created, create_err = _create_gate_pass(conn, org["id"], data, "Gate Kiosk")
         if create_err:
             return jsonify({"error": create_err[0]}), create_err[1]
@@ -2790,6 +2879,9 @@ def api_public_return_gate_pass(gid):
         org, err = _resolve_public_org(conn, str(data.get("orgSlug") or data.get("org_slug") or ""))
         if err:
             return jsonify({"error": err[0], "needOrg": err[2]}), err[1]
+        mod_err = _check_public_portal_module(conn, org["id"], "material")
+        if mod_err:
+            return jsonify({"error": mod_err[0]}), mod_err[1]
         gp = _complete_gatepass_return(conn, org["id"], gid, "Gate Kiosk", note)
         if not gp:
             return jsonify({"error": "Material gate pass not found"}), 404
@@ -2855,6 +2947,9 @@ def api_public_append_gp_photos(gid):
         org, err = _resolve_public_org(conn, str(data.get("orgSlug") or data.get("org_slug") or ""))
         if err:
             return jsonify({"error": err[0], "needOrg": err[2]}), err[1]
+        mod_err = _check_public_portal_module(conn, org["id"], "material")
+        if mod_err:
+            return jsonify({"error": mod_err[0]}), mod_err[1]
         return _append_gp_photos(conn, org["id"], gid, data)
 
 

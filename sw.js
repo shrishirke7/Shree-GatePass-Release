@@ -1,5 +1,5 @@
 /* Shree GatePass - Progressive Web App Service Worker */
-const CACHE_NAME = 'shree-gatepass-v1';
+const CACHE_NAME = 'shree-gatepass-v2';
 const STATIC_ASSETS = [
   '/',
   '/portal',

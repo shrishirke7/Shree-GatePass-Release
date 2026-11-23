@@ -306,13 +306,13 @@
         </div>
       </div>
 
-      <div class="nav-group-label">Gate Operations</div>
+      <div class="nav-group-label" id="navGrpOps">Gate Operations</div>
       <button class="nav-item active" data-view="dashboard" onclick="switchView('dashboard')"><span>🏠 Overview</span></button>
       <button class="nav-item" data-view="visitors" onclick="switchView('visitors')"><span>🪪 Visitor Pass</span><span class="nav-badge hidden" id="sbBadgePending">0</span></button>
       <button class="nav-item" data-view="gatepasses" onclick="switchView('gatepasses')"><span>📦 Material Gate Pass</span><span class="nav-badge hidden" id="sbBadgeOverdue">0</span></button>
       <button class="nav-item" data-view="notifications" onclick="switchView('notifications')"><span>🔔 Notifications &amp; Sounds</span><span class="nav-badge hidden" id="sbBadgeNotif">0</span></button>
 
-      <div class="nav-group-label">Administration</div>
+      <div class="nav-group-label" id="navGrpAdmin">Administration</div>
       <button class="nav-item" data-view="users" onclick="switchView('users')"><span>👥 Users &amp; Import</span></button>
       <button class="nav-item" data-view="departments" onclick="switchView('departments')"><span>🏛 Departments</span></button>
       <button class="nav-item" data-view="factories" onclick="switchView('factories')"><span>🏭 Factories</span></button>
@@ -334,29 +334,37 @@
           <select id="globalFactoryFilter" class="input" onchange="renderCurrentView()" aria-label="Filter Factory"><option value="">All Factories</option></select>
         </div>
         <div class="tb-right">
-          <button type="button" class="btn bell-btn" onclick="switchView('notifications')">🔔 Alerts <span class="bell-dot hidden" id="topBellDot">0</span></button>
+          <button type="button" id="topBellBtn" class="btn bell-btn" onclick="switchView('notifications')">🔔 Alerts <span class="bell-dot hidden" id="topBellDot">0</span></button>
           <span class="chip-user" id="userChip">User</span>
         </div>
       </header>
 
       <main class="content">
+        <section id="view-no-access" class="view-pane hidden">
+          <div class="card" style="max-width:520px;margin:24px auto;text-align:center;padding:28px 18px">
+            <h2 style="margin:0 0 8px">No Modules Assigned</h2>
+            <p style="margin:0;color:var(--muted)">No modules are currently enabled for your account. Contact your Administrator to grant module permissions.</p>
+          </div>
+        </section>
+
         <section id="view-dashboard" class="view-pane">
           <div class="page-hd">
-            <div><h1>Gate Overview</h1><p>Live visitor approvals, active guests inside plant &amp; material movement summary.</p></div>
+            <div><h1>Gate Overview</h1><p id="dashSubtitle">Live visitor approvals, active guests inside plant &amp; material movement summary.</p></div>
             <div style="display:flex;gap:8px;flex-wrap:wrap">
-              <button type="button" class="btn btn-primary" onclick="openNewVisitorModal()">+ New Visitor Pass</button>
-              <button type="button" class="btn btn-amber" onclick="openNewMaterialModal()">+ Record Material IN / OUT</button>
+              <button type="button" id="dashBtnNewVisitor" class="btn btn-primary hidden" onclick="openNewVisitorModal()">+ New Visitor Pass</button>
+              <button type="button" id="dashBtnNewMaterial" class="btn btn-amber hidden" onclick="openNewMaterialModal()">+ Record Material IN / OUT</button>
             </div>
           </div>
           <div class="kpi-grid" id="dashKpis"></div>
-          <div class="grid-2">
-            <div class="card"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><h2 style="margin:0;font-size:16px">🪪 Action Needed · Visitor Queue</h2><button class="btn" onclick="switchView('visitors')">View All →</button></div><div id="dashVisitorQueue"></div></div>
-            <div class="card"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><h2 style="margin:0;font-size:16px">📦 Pending Return &amp; Overdue Materials</h2><button class="btn" onclick="switchView('gatepasses')">View All →</button></div><div id="dashMaterialQueue"></div></div>
+          <div class="grid-2" id="dashModulesGrid">
+            <div class="card hidden" id="dashVisitorCard"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><h2 style="margin:0;font-size:16px">🪪 Action Needed · Visitor Queue</h2><button type="button" class="btn" onclick="switchView('visitors')">View All →</button></div><div id="dashVisitorQueue"></div></div>
+            <div class="card hidden" id="dashMaterialCard"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><h2 style="margin:0;font-size:16px">📦 Pending Return &amp; Overdue Materials</h2><button type="button" class="btn" onclick="switchView('gatepasses')">View All →</button></div><div id="dashMaterialQueue"></div></div>
+            <div class="card hidden" id="dashPermittedCard"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><h2 style="margin:0;font-size:16px">🧩 Your Permitted Modules</h2></div><div id="dashPermittedList"></div></div>
           </div>
         </section>
 
         <section id="view-visitors" class="view-pane hidden">
-          <div class="page-hd"><div><h1>Visitor Pass Management</h1><p>4-Step Lifecycle: <b>Pending Approval</b> → <b>Approved</b> → <b>Checked In</b> → <b>Checked Out</b></p></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="btn" onclick="exportReport('visitors','xlsx')">📊 Excel (.xlsx)</button><button type="button" class="btn btn-soft" onclick="exportReport('visitors','zip')">📦 Excel + Photos (.zip)</button><button type="button" class="btn btn-primary" onclick="openNewVisitorModal()">+ New Visitor Entry</button></div></div>
+          <div class="page-hd"><div><h1>Visitor Pass Management</h1><p>4-Step Lifecycle: <b>Pending Approval</b> → <b>Approved</b> → <b>Checked In</b> → <b>Checked Out</b></p></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="btn" onclick="exportReport('visitors','xlsx')">📊 Excel (.xlsx)</button><button type="button" class="btn btn-soft" onclick="exportReport('visitors','zip')">📦 Excel + Photos (.zip)</button><button type="button" id="vBtnNewVisitor" class="btn btn-primary" onclick="openNewVisitorModal()">+ New Visitor Entry</button></div></div>
           <div class="card">
             <div class="toolbar">
               <input id="vSearch" class="input" style="min-width:220px" placeholder="Search name, mobile, host, company…" oninput="renderVisitors()">
@@ -374,7 +382,7 @@
         </section>
 
         <section id="view-gatepasses" class="view-pane hidden">
-          <div class="page-hd"><div><h1>Material Gate Pass (IN / OUT)</h1><p>Track inward receipts, outward dispatches &amp; automated overdue reminders for returnable materials.</p></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="btn" onclick="exportReport('gatepasses','xlsx')">📊 Excel (.xlsx)</button><button type="button" class="btn btn-soft" onclick="exportReport('gatepasses','zip')">📦 Excel + Photos/Docs (.zip)</button><button type="button" class="btn btn-primary" onclick="openNewMaterialModal()">+ New Material Entry</button></div></div>
+          <div class="page-hd"><div><h1>Material Gate Pass (IN / OUT)</h1><p>Track inward receipts, outward dispatches &amp; automated overdue reminders for returnable materials.</p></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="btn" onclick="exportReport('gatepasses','xlsx')">📊 Excel (.xlsx)</button><button type="button" class="btn btn-soft" onclick="exportReport('gatepasses','zip')">📦 Excel + Photos/Docs (.zip)</button><button type="button" id="mBtnNewMaterial" class="btn btn-primary" onclick="openNewMaterialModal()">+ New Material Entry</button></div></div>
           <div class="card">
             <div class="toolbar">
               <input id="mSearch" class="input" style="min-width:220px" placeholder="Search material, party, challan, vehicle…" oninput="renderGatePasses()">
@@ -414,9 +422,9 @@
             <div><h1>Users &amp; Bulk Import / Export</h1><p id="usersQuotaLabel">Manage roles, departments &amp; bulk onboarding within organization quota.</p></div>
             <div style="display:flex;gap:8px;flex-wrap:wrap">
               <button type="button" class="btn" onclick="downloadSampleUsersCsv()">📄 Sample Excel / CSV</button>
-              <button type="button" class="btn" onclick="triggerBulkUsersImport()">⬆ Import Excel / CSV</button>
+              <button type="button" id="uBtnImportUsers" class="btn" onclick="triggerBulkUsersImport()">⬆ Import Excel / CSV</button>
               <button type="button" class="btn" onclick="exportUsersFile()">⬇ Export Excel / CSV</button>
-              <button type="button" class="btn btn-primary" onclick="openUserModal()">+ Add User</button>
+              <button type="button" id="uBtnAddUser" class="btn btn-primary" onclick="openUserModal()">+ Add User</button>
             </div>
           </div>
           <input type="file" id="bulkUserFileInput" accept=".xlsx,.xls,.csv" class="hidden" onchange="handleBulkUsersFile(event)">
@@ -436,28 +444,43 @@
         </section>
 
         <section id="view-factories" class="view-pane hidden">
-          <div class="page-hd"><div><h1>Factories / Plants</h1><p>Manage factory codes, location titles &amp; gate descriptions.</p></div><button type="button" class="btn btn-primary" onclick="openFactoryModal()">+ Add Factory</button></div>
+          <div class="page-hd"><div><h1>Factories / Plants</h1><p>Manage factory codes, location titles &amp; gate descriptions.</p></div><button type="button" id="fBtnAddFactory" class="btn btn-primary" onclick="openFactoryModal()">+ Add Factory</button></div>
           <div class="card"><div id="factoryListWrap"></div></div>
         </section>
 
         <section id="view-backups" class="view-pane hidden">
-          <div class="page-hd"><div><h1>Organization Data Export</h1><p>Export Visitor &amp; Material Gate Passes cleanly to Excel (with embedded photo thumbnails), complete Photo/Document ZIP bundles, or JSON snapshots.</p></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="btn btn-primary" onclick="exportReport('all','xlsx')">📊 Full Excel (.xlsx)</button><button type="button" class="btn btn-soft" onclick="exportReport('all','zip')">📦 Excel + Photos/Docs (.zip)</button><a class="btn" href="/api/backups/export-json">⬇ JSON Snapshot (.json)</a></div></div>
+          <div class="page-hd"><div><h1>Organization Data Export</h1><p>Export Visitor &amp; Material Gate Passes cleanly to Excel (with embedded photo thumbnails), complete Photo/Document ZIP bundles, or JSON snapshots.</p></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button type="button" id="bBtnFullXlsx" class="btn btn-primary" onclick="exportReport('all','xlsx')">📊 Full Excel (.xlsx)</button><button type="button" id="bBtnFullZip" class="btn btn-soft" onclick="exportReport('all','zip')">📦 Excel + Photos/Docs (.zip)</button><a id="bBtnJson" class="btn" href="/api/backups/export-json">⬇ JSON Snapshot (.json)</a></div></div>
           <div class="card" id="backupListWrap">Loading organization statistics…</div>
         </section>
 
         <section id="view-settings" class="view-pane hidden">
-          <div class="page-hd"><div><h1>Organization Settings &amp; Branding</h1><p>Customize company name, upload your custom logo &amp; copy dedicated gate URLs.</p></div></div>
+          <div class="page-hd"><div><h1>Organization Settings &amp; Branding</h1><p>Customize company name, configure without-login Gate Kiosk modules, upload your custom logo &amp; copy dedicated gate URLs.</p></div></div>
           <div class="grid-2">
             <div class="card">
               <h2 style="margin-top:0;font-size:16px">Company Branding &amp; Gate Links</h2>
+              <p id="settingsReadOnlyHint" class="hidden" style="margin:0 0 10px;font-size:12.5px;color:var(--muted)">🔒 Read-only access: Ask an <b>Administrator</b> to modify organization settings.</p>
               <div class="form-2">
                 <div class="f-group full"><label>Company Display Name</label><input id="setCompany"></div>
                 <div class="f-group full"><label>Gate Kiosk Title</label><input id="setPortalTitle"></div>
+                <div class="f-group full" style="background:var(--surface-soft);border:1px solid var(--border);border-radius:12px;padding:12px">
+                  <label style="display:block;font-size:12.5px;font-weight:800;color:var(--text);margin-bottom:8px">Without-Login Gate Kiosk Modules (Public Portal)</label>
+                  <div style="display:flex;gap:12px;flex-wrap:wrap">
+                    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;font-weight:700;color:var(--text);background:#fff;border:1px solid var(--border);border-radius:10px;padding:8px 12px">
+                      <input type="checkbox" id="setPortalVisitor" style="width:17px;height:17px" onchange="updatePortalModuleHint()">
+                      <span>🪪 Visitor Pass</span>
+                    </label>
+                    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;font-weight:700;color:var(--text);background:#fff;border:1px solid var(--border);border-radius:10px;padding:8px 12px">
+                      <input type="checkbox" id="setPortalMaterial" style="width:17px;height:17px" onchange="updatePortalModuleHint()">
+                      <span>📦 Material Gate (IN / OUT)</span>
+                    </label>
+                  </div>
+                  <div id="setPortalModuleHint" style="font-size:12px;color:var(--muted);margin-top:8px"></div>
+                </div>
                 <div class="f-group"><label>Default Returnable Days</label><input type="number" min="1" max="365" id="setRetDays"></div>
-                <div class="f-group"><label>Custom Organization Logo</label><div style="display:flex;gap:8px;align-items:center"><input type="file" id="orgLogoFileInput" accept="image/*"><button type="button" class="btn" onclick="uploadOrgLogo()">⬆ Upload Logo</button></div></div>
+                <div class="f-group"><label>Custom Organization Logo</label><div style="display:flex;gap:8px;align-items:center"><input type="file" id="orgLogoFileInput" accept="image/*"><button type="button" id="btnUploadOrgLogo" class="btn" onclick="uploadOrgLogo()">⬆ Upload Logo</button></div></div>
                 <div class="f-group full" id="orgLinksBox" style="background:var(--surface-soft);border:1px solid var(--border);border-radius:10px;padding:10px;font-size:12.5px"></div>
               </div>
-              <div style="margin-top:14px"><button type="button" class="btn btn-primary" onclick="saveSettings()">Save Settings</button></div>
+              <div style="margin-top:14px" id="settingsSaveWrap"><button type="button" class="btn btn-primary" onclick="saveSettings()">Save Settings</button></div>
             </div>
             <div class="card">
               <h2 style="margin-top:0;font-size:16px">Change My Password</h2>
@@ -548,15 +571,21 @@
       try {
         const st = await fetch('/api/setup/status' + (slug ? ('?org=' + encodeURIComponent(slug)) : '')).then(r => r.json());
         if (!st.configured) { location.replace('/setup'); return; }
+        const pLink = document.getElementById('loginPortalLink');
         if (st.org) {
           document.getElementById('loginCompanyName').textContent = st.org.name;
           if (st.org.logoUrl) document.getElementById('loginLogoImg').src = st.org.logoUrl;
-          document.getElementById('loginPortalLink').href = '/c/' + encodeURIComponent(st.org.slug) + '/portal';
+          pLink.href = '/c/' + encodeURIComponent(st.org.slug) + '/portal';
+          const pm = st.portalModules || { visitor: true, material: true };
+          pLink.textContent = (pm.visitor && pm.material)
+            ? '🪪 Security Gate Kiosk · Visitor & Material Entry'
+            : (pm.visitor ? '🪪 Security Gate Kiosk · Visitor Pass' : (pm.material ? '📦 Security Gate Kiosk · Material Gate (IN / OUT)' : '🪪 Security Gate Kiosk'));
           if (!slug && st.orgCount === 1) document.getElementById('loginOrg').value = st.org.slug;
         } else {
           document.getElementById('loginCompanyName').textContent = 'Shree GatePass';
           document.getElementById('loginLogoImg').src = '/static/icons/icon-192.png?v=1';
-          document.getElementById('loginPortalLink').href = slug ? ('/c/' + encodeURIComponent(slug) + '/portal') : '/portal';
+          pLink.href = slug ? ('/c/' + encodeURIComponent(slug) + '/portal') : '/portal';
+          pLink.textContent = '🪪 Security Gate Kiosk · Visitor & Material Entry';
         }
       } catch (_) {}
     }
@@ -876,6 +905,21 @@
     }
 
     /* ---------------- ORGANIZATION WORKSPACE BOOT ---------------- */
+    function getFirstAllowedView() {
+      const order = ['dashboard', 'visitors', 'gatepasses', 'notifications', 'users', 'departments', 'factories', 'backups', 'settings'];
+      return order.find(v => hasPerm(v, 'ro')) || null;
+    }
+
+    function applyPermissionShell() {
+      document.querySelectorAll('.nav-item[data-view]').forEach(btn => btn.classList.toggle('hidden', !hasPerm(btn.dataset.view, 'ro')));
+      const opsViews = ['dashboard', 'visitors', 'gatepasses', 'notifications'];
+      const admViews = ['users', 'departments', 'factories', 'backups', 'settings'];
+      document.getElementById('navGrpOps')?.classList.toggle('hidden', !opsViews.some(v => hasPerm(v, 'ro')));
+      document.getElementById('navGrpAdmin')?.classList.toggle('hidden', !admViews.some(v => hasPerm(v, 'ro')));
+      document.getElementById('topBellBtn')?.classList.toggle('hidden', !hasPerm('notifications', 'ro'));
+      document.getElementById('globalFactoryFilter')?.classList.toggle('hidden', !hasPerm('visitors', 'ro') && !hasPerm('gatepasses', 'ro'));
+    }
+
     async function bootSession() {
       const data = await api('/api/data');
       APP.user = data.user; APP.org = data.org; APP.factories = data.factories || [];
@@ -893,25 +937,32 @@
       if (APP.org?.slug) document.getElementById('sbKioskLink').href = '/c/' + encodeURIComponent(APP.org.slug) + '/portal';
       document.getElementById('userChip').textContent = `${APP.user.full_name} (${APP.user.dept || APP.user.role})`;
 
-      document.querySelectorAll('.nav-item[data-view]').forEach(btn => btn.classList.toggle('hidden', !hasPerm(btn.dataset.view, 'ro')));
+      applyPermissionShell();
       const facSel = document.getElementById('globalFactoryFilter');
       facSel.innerHTML = '<option value="">All Factories</option>' + APP.factories.map(f => `<option value="${esc(f.code)}">${esc(f.name || f.code)}</option>`).join('');
       if (APP.user.factory) facSel.value = APP.user.factory;
 
       await Promise.all([loadVisitors(), loadGatePasses(), loadNotifs()]);
-      renderCurrentView();
+      const initialView = hasPerm(APP.currentView, 'ro') ? APP.currentView : getFirstAllowedView();
+      if (initialView) {
+        switchView(initialView);
+      } else {
+        document.querySelectorAll('.view-pane').forEach(p => p.classList.add('hidden'));
+        document.getElementById('view-no-access')?.classList.remove('hidden');
+        document.getElementById('topbarViewTitle').textContent = 'No Access';
+      }
       startLiveSync();
       if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
     }
 
     async function loadVisitors() { APP.visitors = hasPerm('visitors', 'ro') ? ((await api('/api/visitors')).visitors || []) : []; }
     async function loadGatePasses() { APP.gatePasses = hasPerm('gatepasses', 'ro') ? ((await api('/api/gate-passes')).gatePasses || []) : []; }
-    async function loadNotifs() { APP.notifications = (await api('/api/notifications/history')).notifications || []; updateBadges(); }
+    async function loadNotifs() { APP.notifications = hasPerm('notifications', 'ro') ? ((await api('/api/notifications/history')).notifications || []) : []; updateBadges(); }
 
     function updateBadges() {
-      const pendingV = APP.visitors.filter(v => v.status === 'Pending').length;
-      const overdueM = APP.gatePasses.filter(g => g.overdue || (g.isReturnable && !g.returnedAt)).length;
-      const unreadN = groupNotifications(APP.notifications).filter(g => g.unreadCount > 0).length;
+      const pendingV = hasPerm('visitors', 'ro') ? APP.visitors.filter(v => v.status === 'Pending').length : 0;
+      const overdueM = hasPerm('gatepasses', 'ro') ? APP.gatePasses.filter(g => g.overdue || (g.isReturnable && !g.returnedAt)).length : 0;
+      const unreadN = hasPerm('notifications', 'ro') ? groupNotifications(APP.notifications).filter(g => g.unreadCount > 0).length : 0;
       const sbV = document.getElementById('sbBadgePending'); sbV.textContent = pendingV; sbV.classList.toggle('hidden', !pendingV);
       const sbM = document.getElementById('sbBadgeOverdue'); sbM.textContent = overdueM; sbM.classList.toggle('hidden', !overdueM);
       const sbN = document.getElementById('sbBadgeNotif'); sbN.textContent = unreadN; sbN.classList.toggle('hidden', !unreadN);
@@ -919,6 +970,17 @@
     }
 
     function switchView(view) {
+      if (!hasPerm(view, 'ro')) {
+        const fallback = getFirstAllowedView();
+        if (!fallback) {
+          document.querySelectorAll('.view-pane').forEach(p => p.classList.add('hidden'));
+          document.getElementById('view-no-access')?.classList.remove('hidden');
+          document.getElementById('topbarViewTitle').textContent = 'No Access';
+          document.getElementById('sidebar').classList.remove('open');
+          return;
+        }
+        view = fallback;
+      }
       APP.currentView = view;
       document.querySelectorAll('.view-pane').forEach(p => p.classList.add('hidden'));
       document.getElementById('view-' + view)?.classList.remove('hidden');
@@ -943,31 +1005,126 @@
     }
 
     function renderDashboard() {
+      const canVisitors = hasPerm('visitors', 'ro');
+      const canVisitorsWrite = hasPerm('visitors', 'rw');
+      const canMaterials = hasPerm('gatepasses', 'ro');
+      const canMaterialsWrite = hasPerm('gatepasses', 'rw');
+
+      document.getElementById('dashBtnNewVisitor')?.classList.toggle('hidden', !canVisitorsWrite);
+      document.getElementById('dashBtnNewMaterial')?.classList.toggle('hidden', !canMaterialsWrite);
+
+      const subEl = document.getElementById('dashSubtitle');
+      if (subEl) {
+        if (canVisitors && canMaterials) subEl.textContent = 'Live visitor approvals, active guests inside plant & material movement summary.';
+        else if (canVisitors) subEl.textContent = 'Live visitor approvals & active guests inside plant summary.';
+        else if (canMaterials) subEl.textContent = 'Material inward/outward movement, returnables & overdue tracking summary.';
+        else subEl.textContent = 'Quick overview of your permitted workspace modules.';
+      }
+
       const fac = document.getElementById('globalFactoryFilter').value;
-      const vs = APP.visitors.filter(v => !fac || !v.factory || v.factory === fac);
-      const gs = APP.gatePasses.filter(g => !fac || !g.factory || g.factory === fac);
-      const pending = vs.filter(v => v.status === 'Pending'), approved = vs.filter(v => v.status === 'Approved'), inside = vs.filter(v => v.status === 'Checked In');
-      const retPending = gs.filter(g => g.isReturnable && !g.returnedAt), overdue = gs.filter(g => g.overdue);
-      document.getElementById('dashKpis').innerHTML = `
-        <div class="kpi" style="border-left-color:#d97706"><div class="kpi-lbl">Waiting Approval</div><div class="kpi-val">${pending.length}</div></div>
-        <div class="kpi" style="border-left-color:#157a54"><div class="kpi-lbl">Approved (At Gate)</div><div class="kpi-val">${approved.length}</div></div>
-        <div class="kpi" style="border-left-color:#1d5fb8"><div class="kpi-lbl">Checked In (Inside)</div><div class="kpi-val">${inside.length}</div></div>
-        <div class="kpi" style="border-left-color:#0f766e"><div class="kpi-lbl">Material Passes</div><div class="kpi-val">${gs.length}</div></div>
-        <div class="kpi" style="border-left-color:${overdue.length ? '#dc2626' : '#0d9488'}"><div class="kpi-lbl">Returnable / Overdue</div><div class="kpi-val">${retPending.length} <span style="font-size:14px;color:#dc2626">(${overdue.length} overdue)</span></div></div>
-      `;
-      const vQ = [...pending, ...approved, ...inside].slice(0, 8);
-      document.getElementById('dashVisitorQueue').innerHTML = vQ.length ? vQ.map(v => `
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid var(--border)">
-          <div><b>${esc(v.visitorName)}</b> <span style="color:var(--muted);font-size:12px">(${esc(v.company || v.phone)})</span><br><span style="font-size:12px;color:var(--muted)">Meet: <b>${esc(v.hostName || v.department)}</b> · ${statusBadge(v.status)}</span></div>
-          <div style="display:flex;gap:6px;flex-wrap:wrap">${visitorActionsHtml(v)}</div>
-        </div>
-      `).join('') : '<p style="color:var(--muted)">No pending or active visitors right now.</p>';
-      document.getElementById('dashMaterialQueue').innerHTML = retPending.length ? retPending.slice(0, 8).map(g => `
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid var(--border)">
-          <div><b>${esc(g.materialName)}</b> (${esc(g.direction)})<br><span style="font-size:12px;color:var(--muted)">Qty ${esc(g.quantity)} ${esc(g.unit)} · ${esc(g.forName || g.department || 'Plant')} · ${g.overdue ? '<b style="color:#dc2626">OVERDUE</b>' : 'Due ' + new Date(g.expectedReturnAt).toLocaleDateString()}</span></div>
-          <button class="btn btn-soft" onclick="markMaterialReturned('${esc(g.id)}')">✓ Returned</button>
-        </div>
-      `).join('') : '<p style="color:var(--muted)">No pending returnable materials.</p>';
+      const kpiHtml = [];
+      let pending = [], approved = [], inside = [], retPending = [], overdue = [];
+
+      if (canVisitors) {
+        const vs = APP.visitors.filter(v => !fac || !v.factory || v.factory === fac);
+        pending = vs.filter(v => v.status === 'Pending');
+        approved = vs.filter(v => v.status === 'Approved');
+        inside = vs.filter(v => v.status === 'Checked In');
+        kpiHtml.push(
+          `<div class="kpi" style="border-left-color:#d97706"><div class="kpi-lbl">Waiting Approval</div><div class="kpi-val">${pending.length}</div></div>`,
+          `<div class="kpi" style="border-left-color:#157a54"><div class="kpi-lbl">Approved (At Gate)</div><div class="kpi-val">${approved.length}</div></div>`,
+          `<div class="kpi" style="border-left-color:#1d5fb8"><div class="kpi-lbl">Checked In (Inside)</div><div class="kpi-val">${inside.length}</div></div>`,
+        );
+      }
+
+      if (canMaterials) {
+        const gs = APP.gatePasses.filter(g => !fac || !g.factory || g.factory === fac);
+        retPending = gs.filter(g => g.isReturnable && !g.returnedAt);
+        overdue = gs.filter(g => g.overdue);
+        kpiHtml.push(
+          `<div class="kpi" style="border-left-color:#0f766e"><div class="kpi-lbl">Material Passes</div><div class="kpi-val">${gs.length}</div></div>`,
+          `<div class="kpi" style="border-left-color:${overdue.length ? '#dc2626' : '#0d9488'}"><div class="kpi-lbl">Returnable / Overdue</div><div class="kpi-val">${retPending.length} <span style="font-size:14px;color:#dc2626">(${overdue.length} overdue)</span></div></div>`,
+        );
+      }
+
+      const showFallback = !canVisitors && !canMaterials;
+      if (showFallback) {
+        if (hasPerm('notifications', 'ro')) {
+          const unreadN = groupNotifications(APP.notifications).filter(g => g.unreadCount > 0).length;
+          kpiHtml.push(`<div class="kpi" style="border-left-color:#157a54"><div class="kpi-lbl">Unread Alerts</div><div class="kpi-val">${unreadN}</div></div>`);
+        }
+        if (hasPerm('users', 'ro')) {
+          const activeU = (APP.users || []).filter(u => u.enabled !== false).length;
+          kpiHtml.push(`<div class="kpi" style="border-left-color:#1d5fb8"><div class="kpi-lbl">Active Users</div><div class="kpi-val">${activeU}</div></div>`);
+        }
+        if (hasPerm('departments', 'ro')) {
+          kpiHtml.push(`<div class="kpi" style="border-left-color:#0f766e"><div class="kpi-lbl">Departments</div><div class="kpi-val">${(APP.departments || []).length}</div></div>`);
+        }
+        if (hasPerm('factories', 'ro')) {
+          kpiHtml.push(`<div class="kpi" style="border-left-color:#d97706"><div class="kpi-lbl">Factories / Plants</div><div class="kpi-val">${(APP.factories || []).length}</div></div>`);
+        }
+      }
+
+      const kpiWrap = document.getElementById('dashKpis');
+      kpiWrap.innerHTML = kpiHtml.join('');
+      kpiWrap.classList.toggle('hidden', kpiHtml.length === 0);
+
+      const vCard = document.getElementById('dashVisitorCard');
+      const mCard = document.getElementById('dashMaterialCard');
+      const pCard = document.getElementById('dashPermittedCard');
+      const grid = document.getElementById('dashModulesGrid');
+
+      vCard?.classList.toggle('hidden', !canVisitors);
+      mCard?.classList.toggle('hidden', !canMaterials);
+      pCard?.classList.toggle('hidden', !showFallback);
+
+      if (grid) {
+        const visibleCount = (canVisitors ? 1 : 0) + (canMaterials ? 1 : 0) + (showFallback ? 1 : 0);
+        grid.style.gridTemplateColumns = visibleCount === 1 ? '1fr' : '';
+      }
+
+      if (canVisitors) {
+        const vQ = [...pending, ...approved, ...inside].slice(0, 8);
+        document.getElementById('dashVisitorQueue').innerHTML = vQ.length ? vQ.map(v => `
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid var(--border)">
+            <div><b>${esc(v.visitorName)}</b> <span style="color:var(--muted);font-size:12px">(${esc(v.company || v.phone)})</span><br><span style="font-size:12px;color:var(--muted)">Meet: <b>${esc(v.hostName || v.department)}</b> · ${statusBadge(v.status)}</span></div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap">${visitorActionsHtml(v)}</div>
+          </div>
+        `).join('') : '<p style="color:var(--muted)">No pending or active visitors right now.</p>';
+      } else {
+        document.getElementById('dashVisitorQueue').innerHTML = '';
+      }
+
+      if (canMaterials) {
+        document.getElementById('dashMaterialQueue').innerHTML = retPending.length ? retPending.slice(0, 8).map(g => `
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid var(--border)">
+            <div><b>${esc(g.materialName)}</b> (${esc(g.direction)})<br><span style="font-size:12px;color:var(--muted)">Qty ${esc(g.quantity)} ${esc(g.unit)} · ${esc(g.forName || g.department || 'Plant')} · ${g.overdue ? '<b style="color:#dc2626">OVERDUE</b>' : 'Due ' + new Date(g.expectedReturnAt).toLocaleDateString()}</span></div>
+            ${canMaterialsWrite ? `<button class="btn btn-soft" onclick="markMaterialReturned('${esc(g.id)}')">✓ Returned</button>` : statusBadge(g.overdue ? 'Overdue' : 'Pending Return')}
+          </div>
+        `).join('') : '<p style="color:var(--muted)">No pending returnable materials.</p>';
+      } else {
+        document.getElementById('dashMaterialQueue').innerHTML = '';
+      }
+
+      if (showFallback) {
+        const modCatalog = [
+          ['notifications', '🔔 Notifications & Sounds', 'View your targeted alerts and ringtone rules.'],
+          ['users', '👥 Users & Import', 'View and manage user accounts and roles.'],
+          ['departments', '🏛 Departments', 'View factory departments.'],
+          ['factories', '🏭 Factories / Plants', 'View plant sites and gate locations.'],
+          ['backups', '💾 Export Data', 'Download permitted organization data exports.'],
+          ['settings', '⚙ Settings & Branding', 'View or update company and Gate Kiosk settings.'],
+        ];
+        const allowedRows = modCatalog.filter(([k]) => hasPerm(k, 'ro'));
+        document.getElementById('dashPermittedList').innerHTML = allowedRows.length ? allowedRows.map(([k, title, desc]) => `
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid var(--border)">
+            <div><b>${esc(title)}</b><br><span style="font-size:12px;color:var(--muted)">${esc(desc)}</span></div>
+            <button type="button" class="btn btn-soft" onclick="switchView('${esc(k)}')">Open →</button>
+          </div>
+        `).join('') : '<p style="color:var(--muted);margin:0">No additional modules are assigned to your account.</p>';
+      } else {
+        document.getElementById('dashPermittedList').innerHTML = '';
+      }
     }
 
     function statusBadge(s) {
@@ -1002,15 +1159,19 @@
     }
 
     function visitorActionsHtml(v, allowDelete = false) {
+      const canWrite = hasPerm('visitors', 'rw');
       const btns = [];
-      if (v.status === 'Pending') btns.push(`<button class="btn btn-primary" onclick="decideVisitor('${esc(v.id)}','Approved')">✓ Approve</button>`, `<button class="btn btn-danger" onclick="decideVisitor('${esc(v.id)}','Rejected')">✕ Reject</button>`);
-      else if (v.status === 'Approved') btns.push(`<button class="btn btn-blue" onclick="checkinVisitor('${esc(v.id)}')">📍 Check In</button>`, `<button class="btn" onclick="checkoutVisitor('${esc(v.id)}')">🚪 Check Out</button>`);
-      else if (v.status === 'Checked In') btns.push(`<button class="btn btn-amber" onclick="checkoutVisitor('${esc(v.id)}')">🚪 Check Out</button>`);
+      if (canWrite) {
+        if (v.status === 'Pending') btns.push(`<button class="btn btn-primary" onclick="decideVisitor('${esc(v.id)}','Approved')">✓ Approve</button>`, `<button class="btn btn-danger" onclick="decideVisitor('${esc(v.id)}','Rejected')">✕ Reject</button>`);
+        else if (v.status === 'Approved') btns.push(`<button class="btn btn-blue" onclick="checkinVisitor('${esc(v.id)}')">📍 Check In</button>`, `<button class="btn" onclick="checkoutVisitor('${esc(v.id)}')">🚪 Check Out</button>`);
+        else if (v.status === 'Checked In') btns.push(`<button class="btn btn-amber" onclick="checkoutVisitor('${esc(v.id)}')">🚪 Check Out</button>`);
+      }
       if (allowDelete && isAdmin()) btns.push(`<button class="btn btn-danger" onclick="deleteVisitor('${esc(v.id)}')">🗑 Delete</button>`);
-      return btns.length ? btns.join('') : '<span style="font-size:12px;color:var(--muted)">Completed</span>';
+      return btns.length ? btns.join('') : `<span style="font-size:12px;color:var(--muted)">${canWrite ? 'Completed' : 'Read only'}</span>`;
     }
     function setVTab(tab, btn) { APP.vTab = tab; document.querySelectorAll('#vStatusTabs .pill-tab').forEach(b => b.classList.remove('active')); btn.classList.add('active'); renderVisitors(); }
     function renderVisitors() {
+      document.getElementById('vBtnNewVisitor')?.classList.toggle('hidden', !hasPerm('visitors', 'rw'));
       const fac = document.getElementById('globalFactoryFilter').value, q = (document.getElementById('vSearch').value || '').trim().toLowerCase();
       const rows = APP.visitors.filter(v => (!fac || !v.factory || v.factory === fac) && (APP.vTab === 'all' || v.status === APP.vTab) && (!q || `${v.id} ${v.visitorName} ${v.phone} ${v.company} ${v.hostName} ${v.department}`.toLowerCase().includes(q)));
       document.getElementById('vTableBody').innerHTML = rows.length ? rows.map(v => {
@@ -1067,13 +1228,15 @@
 
     function setMTab(tab, btn) { APP.mTab = tab; document.querySelectorAll('#mStatusTabs .pill-tab').forEach(b => b.classList.remove('active')); btn.classList.add('active'); renderGatePasses(); }
     function renderGatePasses() {
+      const canWrite = hasPerm('gatepasses', 'rw');
+      document.getElementById('mBtnNewMaterial')?.classList.toggle('hidden', !canWrite);
       const fac = document.getElementById('globalFactoryFilter').value, q = (document.getElementById('mSearch').value || '').trim().toLowerCase();
       const rows = APP.gatePasses.filter(g => (!fac || !g.factory || g.factory === fac) && (APP.mTab === 'IN' ? g.direction === 'IN' : APP.mTab === 'OUT' ? g.direction === 'OUT' : APP.mTab === 'PENDING_RET' ? (g.isReturnable && !g.returnedAt) : APP.mTab === 'OVERDUE' ? g.overdue : APP.mTab === 'RETURNED' ? Boolean(g.returnedAt) : true) && (!q || `${g.id} ${g.materialName} ${g.partyName} ${g.challanNo} ${g.vehicleNo} ${g.forName} ${g.department}`.toLowerCase().includes(q)));
       document.getElementById('mTableBody').innerHTML = rows.length ? rows.map(g => {
         const matImgs = (g.materialPhotos || []).map(u => mediaThumbHtml(u)).join('');
         const billImgs = (g.billPhotos || []).map(u => mediaThumbHtml(u)).join('');
         const gpActions = [];
-        if (g.isReturnable && !g.returnedAt) gpActions.push(`<button class="btn btn-primary" onclick="markMaterialReturned('${esc(g.id)}')">✓ Mark Returned</button>`);
+        if (canWrite && g.isReturnable && !g.returnedAt) gpActions.push(`<button class="btn btn-primary" onclick="markMaterialReturned('${esc(g.id)}')">✓ Mark Returned</button>`);
         if (isAdmin()) gpActions.push(`<button class="btn btn-danger" onclick="deleteGatePass('${esc(g.id)}')">🗑 Delete</button>`);
         return `<tr>
           <td><b>${esc(g.id)}</b><br><span class="badge ${g.direction==='IN'?'b-approved':'b-pending'}">${esc(g.direction)}</span></td>
@@ -1082,7 +1245,7 @@
           <td><b>${esc(g.forName || 'Whole Dept')}</b><br><span style="font-size:12px;color:var(--muted)">${esc(g.department || '-')} · ${esc(g.factory || '-')}</span></td>
           <td>${matImgs || billImgs ? `<div class="thumb-row">${matImgs}${billImgs}</div>` : '<span style="color:var(--muted);font-size:12px">—</span>'}</td>
           <td>${g.isReturnable ? (g.returnedAt ? '<span class="badge b-approved">✓ Returned</span>' : (g.overdue ? `<span class="badge b-overdue">⚠ OVERDUE (${g.expectedDays}d)</span>` : `<span class="badge b-pending">⏳ Due ${new Date(g.expectedReturnAt).toLocaleDateString()}</span>`)) : '<span style="font-size:12px;color:var(--muted)">Non-Returnable</span>'}</td>
-          <td><div style="display:flex;gap:6px;flex-wrap:wrap">${gpActions.length ? gpActions.join('') : '<span style="font-size:12px;color:var(--muted)">Closed</span>'}</div></td>
+          <td><div style="display:flex;gap:6px;flex-wrap:wrap">${gpActions.length ? gpActions.join('') : `<span style="font-size:12px;color:var(--muted)">${canWrite ? 'Closed' : 'Read only'}</span>`}</div></td>
         </tr>`;
       }).join('') : '<tr><td colspan="7" style="color:var(--muted)">No matching material gate passes found.</td></tr>';
     }
@@ -1194,7 +1357,7 @@
               </div>
               <div style="display:flex;gap:6px;flex-wrap:wrap;flex-shrink:0" onclick="event.stopPropagation()">
                 ${multi ? `<button type="button" class="btn" onclick="toggleNotifGroup('${esc(g.key)}')">${isOpen ? '▾ Collapse' : `▸ ${g.items.length} Trails`}</button>` : ''}
-                <button type="button" class="btn" onclick="switchView('${esc(g.targetView || 'visitors')}')">Open →</button>
+                ${hasPerm(g.targetView || 'visitors', 'ro') ? `<button type="button" class="btn" onclick="switchView('${esc(g.targetView || 'visitors')}')">Open →</button>` : ''}
                 ${hasUnread ? `<button type="button" class="btn btn-soft" onclick="markNotifGroupRead('${esc(g.key)}')">✓ Read${g.unreadCount > 1 ? ` (${g.unreadCount})` : ''}</button>` : ''}
               </div>
             </div>
@@ -1265,19 +1428,57 @@
       APP.pollTimer = setInterval(async () => {
         try {
           const p = await fetch('/api/live-pulse').then(r => r.json());
-          if (p.visitorRev !== APP.revisions.visitorRev) { APP.revisions.visitorRev = p.visitorRev; await loadVisitors(); if (APP.currentView === 'visitors' || APP.currentView === 'dashboard') renderCurrentView(); }
-          if (p.gatepassRev !== APP.revisions.gatepassRev) { APP.revisions.gatepassRev = p.gatepassRev; await loadGatePasses(); if (APP.currentView === 'gatepasses' || APP.currentView === 'dashboard') renderCurrentView(); }
-          if (p.notifRev !== APP.revisions.notifRev) { APP.revisions.notifRev = p.notifRev; await loadNotifs(); if (APP.currentView === 'notifications') renderNotifications(); }
+          if (p.dataRev !== undefined && p.dataRev !== APP.revisions.dataRev) {
+            const d = await api('/api/data');
+            const prevFac = document.getElementById('globalFactoryFilter')?.value || '';
+            APP.user = d.user; APP.org = d.org; APP.factories = d.factories || [];
+            APP.departments = d.departments || []; APP.users = d.users || []; APP.directory = d.directory || [];
+            APP.settings = d.settings || {}; APP.soundConfig = d.soundConfig || {}; APP.userNotifPrefs = d.userNotifPrefs || {};
+            APP.revisions.dataRev = p.dataRev;
+            applyPermissionShell();
+            const facSel = document.getElementById('globalFactoryFilter');
+            if (facSel) {
+              facSel.innerHTML = '<option value="">All Factories</option>' + APP.factories.map(f => `<option value="${esc(f.code)}">${esc(f.name || f.code)}</option>`).join('');
+              facSel.value = prevFac;
+            }
+            await Promise.all([loadVisitors(), loadGatePasses(), loadNotifs()]);
+            if (!hasPerm(APP.currentView, 'ro')) {
+              const fb = getFirstAllowedView();
+              if (fb) switchView(fb);
+              else {
+                document.querySelectorAll('.view-pane').forEach(pane => pane.classList.add('hidden'));
+                document.getElementById('view-no-access')?.classList.remove('hidden');
+                document.getElementById('topbarViewTitle').textContent = 'No Access';
+              }
+            } else if (APP.currentView !== 'settings') {
+              renderCurrentView();
+            }
+          }
+          if (p.visitorRev !== APP.revisions.visitorRev) {
+            APP.revisions.visitorRev = p.visitorRev;
+            if (hasPerm('visitors', 'ro')) { await loadVisitors(); if (APP.currentView === 'visitors' || APP.currentView === 'dashboard') renderCurrentView(); }
+          }
+          if (p.gatepassRev !== APP.revisions.gatepassRev) {
+            APP.revisions.gatepassRev = p.gatepassRev;
+            if (hasPerm('gatepasses', 'ro')) { await loadGatePasses(); if (APP.currentView === 'gatepasses' || APP.currentView === 'dashboard') renderCurrentView(); }
+          }
+          if (p.notifRev !== APP.revisions.notifRev) {
+            APP.revisions.notifRev = p.notifRev;
+            if (hasPerm('notifications', 'ro')) { await loadNotifs(); if (APP.currentView === 'notifications') renderNotifications(); }
+          }
         } catch (_) {}
       }, 8000);
     }
 
     /* ---------------- USERS / DEPTS / FACTORIES / BACKUPS / SETTINGS ---------------- */
     function renderUsers() {
+      const canEdit = hasPerm('users', 'rw');
+      document.getElementById('uBtnAddUser')?.classList.toggle('hidden', !canEdit);
+      document.getElementById('uBtnImportUsers')?.classList.toggle('hidden', !canEdit);
       document.getElementById('usersQuotaLabel').textContent = `Active Quota: ${(APP.users || []).length} / ${APP.org?.maxUsers || 100} users (${APP.org?.planName || 'Standard'} Plan)`;
       const q = (document.getElementById('uSearch').value || '').toLowerCase();
       document.getElementById('uTableBody').innerHTML = (APP.users || []).filter(u => !q || `${u.username} ${u.full_name} ${u.dept} ${u.role}`.toLowerCase().includes(q)).map(u => `
-        <tr><td><b>${esc(u.full_name)}</b><br><span style="font-size:12px;color:var(--muted)">@${esc(u.username)}</span></td><td><b>${esc(u.role)}</b><br><span style="font-size:11.5px;color:var(--muted)">Scope: ${esc(u.gate_scope || 'user')}</span></td><td>${esc(u.dept || '-')}<br><span style="font-size:12px;color:var(--muted)">${esc(u.factory || 'All Factories')}</span></td><td>${u.enabled ? '<span class="badge b-approved">Active</span>' : '<span class="badge b-rejected">Disabled</span>'}</td><td><div style="display:flex;gap:6px"><button class="btn" onclick="openUserModal('${esc(u.username)}')">Edit</button>${isAdmin() && u.username !== APP.user?.username ? `<button class="btn btn-danger" onclick="deleteUser('${esc(u.username)}')">Delete</button>` : ''}</div></td></tr>
+        <tr><td><b>${esc(u.full_name)}</b><br><span style="font-size:12px;color:var(--muted)">@${esc(u.username)}</span></td><td><b>${esc(u.role)}</b><br><span style="font-size:11.5px;color:var(--muted)">Scope: ${esc(u.gate_scope || 'user')}</span></td><td>${esc(u.dept || '-')}<br><span style="font-size:12px;color:var(--muted)">${esc(u.factory || 'All Factories')}</span></td><td>${u.enabled ? '<span class="badge b-approved">Active</span>' : '<span class="badge b-rejected">Disabled</span>'}</td><td><div style="display:flex;gap:6px">${canEdit ? `<button class="btn" onclick="openUserModal('${esc(u.username)}')">Edit</button>` : '<span style="font-size:12px;color:var(--muted)">Read only</span>'}${isAdmin() && u.username !== APP.user?.username ? `<button class="btn btn-danger" onclick="deleteUser('${esc(u.username)}')">Delete</button>` : ''}</div></td></tr>
       `).join('');
     }
     function openUserModal(uname) {
@@ -1381,6 +1582,7 @@
 
     function renderFactories() {
       const canEdit = hasPerm('factories', 'rw');
+      document.getElementById('fBtnAddFactory')?.classList.toggle('hidden', !canEdit);
       document.getElementById('factoryListWrap').innerHTML = APP.factories.map((f, i) => `<div style="border:1px solid var(--border);border-radius:12px;padding:12px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;gap:10px"><div><b>${esc(f.code)}</b> — ${esc(f.name)}<br><span style="font-size:12px;color:var(--muted)">${esc(f.desc || 'No description')}</span></div>${canEdit ? `<div style="display:flex;gap:6px"><button class="btn" onclick="openFactoryModal(${i})">Edit</button><button class="btn btn-danger" onclick="deleteFactory(${i})">Remove</button></div>` : ''}</div>`).join('');
     }
     function openFactoryModal(idx = -1) {
@@ -1412,31 +1614,81 @@
 
     async function loadBackupsView() {
       const wrap = document.getElementById('backupListWrap');
+      const canV = hasPerm('visitors', 'ro');
+      const canM = hasPerm('gatepasses', 'ro');
+      document.getElementById('bBtnFullXlsx')?.classList.toggle('hidden', !(canV && canM));
+      document.getElementById('bBtnFullZip')?.classList.toggle('hidden', !(canV && canM));
       try {
         const res = await api('/api/backups');
-        wrap.innerHTML = `
-          <p style="margin:0 0 12px"><b>Organization:</b> ${esc(APP.org?.name || '')} (<code>${esc(APP.org?.slug || '')}</code>)<br><b>Stored Records:</b> ${res.counts?.visitors || 0} Visitor Passes · ${res.counts?.gatePasses || 0} Material Gate Passes.</p>
-          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px">
+        const cards = [];
+        if (canV) {
+          cards.push(`
             <div style="border:1px solid var(--border);border-radius:12px;padding:12px;background:var(--surface-soft)">
               <b>🪪 Visitor Passes Export</b><br><span style="font-size:12px;color:var(--muted)">Includes Selfie &amp; ID Card photos + links</span>
               <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"><button type="button" class="btn" onclick="exportReport('visitors','xlsx')">📊 Excel (.xlsx)</button><button type="button" class="btn btn-soft" onclick="exportReport('visitors','zip')">📦 Excel + Photos (.zip)</button></div>
             </div>
+          `);
+        }
+        if (canM) {
+          cards.push(`
             <div style="border:1px solid var(--border);border-radius:12px;padding:12px;background:var(--surface-soft)">
               <b>📦 Material Gate Passes Export</b><br><span style="font-size:12px;color:var(--muted)">Includes Material photos, Challan/Bill photos &amp; PDFs</span>
               <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"><button type="button" class="btn" onclick="exportReport('gatepasses','xlsx')">📊 Excel (.xlsx)</button><button type="button" class="btn btn-soft" onclick="exportReport('gatepasses','zip')">📦 Excel + Files (.zip)</button></div>
             </div>
+          `);
+        }
+        if (canV && canM) {
+          cards.push(`
             <div style="border:1px solid var(--border);border-radius:12px;padding:12px;background:var(--surface-soft)">
               <b>🏢 Complete Company Archive</b><br><span style="font-size:12px;color:var(--muted)">Multi-sheet Excel + full <code>files/</code> media folder</span>
               <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"><button type="button" class="btn btn-primary" onclick="exportReport('all','xlsx')">📊 Full Excel (.xlsx)</button><button type="button" class="btn btn-soft" onclick="exportReport('all','zip')">📦 Complete ZIP</button></div>
             </div>
-          </div>`;
+          `);
+        }
+        const statsParts = [];
+        if (canV) statsParts.push(`${res.counts?.visitors || 0} Visitor Passes`);
+        if (canM) statsParts.push(`${res.counts?.gatePasses || 0} Material Gate Passes`);
+        wrap.innerHTML = `
+          <p style="margin:0 0 12px"><b>Organization:</b> ${esc(APP.org?.name || '')} (<code>${esc(APP.org?.slug || '')}</code>)${statsParts.length ? `<br><b>Stored Records:</b> ${statsParts.join(' · ')}.` : ''}</p>
+          ${cards.length ? `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px">${cards.join('')}</div>` : '<p style="color:var(--muted);margin:0">Only JSON snapshot export is available without Visitor Pass or Material Gate Pass permissions.</p>'}`;
       } catch (err) { wrap.innerHTML = `<p style="color:var(--danger)">${esc(err.message)}</p>`; }
     }
 
+    function updatePortalModuleHint() {
+      const vOn = Boolean(document.getElementById('setPortalVisitor')?.checked);
+      const mOn = Boolean(document.getElementById('setPortalMaterial')?.checked);
+      const hint = document.getElementById('setPortalModuleHint');
+      if (!hint) return;
+      if (vOn && mOn) {
+        hint.style.color = 'var(--muted)';
+        hint.textContent = 'Both Visitor Pass and Material Gate (IN / OUT) will be visible on the without-login Gate Kiosk.';
+      } else if (vOn) {
+        hint.style.color = 'var(--accent-dark)';
+        hint.textContent = 'Only Visitor Pass will be visible on the without-login Gate Kiosk.';
+      } else if (mOn) {
+        hint.style.color = 'var(--accent-dark)';
+        hint.textContent = 'Only Material Gate (IN / OUT) will be visible on the without-login Gate Kiosk.';
+      } else {
+        hint.style.color = 'var(--danger)';
+        hint.textContent = 'Select at least one module (Visitor Pass or Material Gate) before saving.';
+      }
+    }
+
     function renderSettings() {
+      const canEdit = hasPerm('settings', 'rw');
       document.getElementById('setCompany').value = APP.settings.company || APP.org?.name || '';
       document.getElementById('setPortalTitle').value = APP.settings.portal_title || '';
       document.getElementById('setRetDays').value = APP.settings.default_returnable_days || 7;
+      document.getElementById('setPortalVisitor').checked = APP.settings.portal_visitor_enabled !== false;
+      document.getElementById('setPortalMaterial').checked = APP.settings.portal_material_enabled !== false;
+      ['setCompany', 'setPortalTitle', 'setRetDays', 'setPortalVisitor', 'setPortalMaterial', 'orgLogoFileInput'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.disabled = !canEdit;
+      });
+      document.getElementById('settingsReadOnlyHint')?.classList.toggle('hidden', canEdit);
+      document.getElementById('btnUploadOrgLogo')?.classList.toggle('hidden', !canEdit);
+      document.getElementById('settingsSaveWrap')?.classList.toggle('hidden', !canEdit);
+      updatePortalModuleHint();
       const slug = APP.org?.slug || '';
       const loginUrl = `${location.origin}/c/${slug}`;
       const kioskUrl = `${location.origin}/c/${slug}/portal`;
@@ -1447,8 +1699,24 @@
       `;
     }
     async function saveSettings() {
+      const portalVisitor = document.getElementById('setPortalVisitor').checked;
+      const portalMaterial = document.getElementById('setPortalMaterial').checked;
+      if (!portalVisitor && !portalMaterial) {
+        showToast('Select at least one Gate Kiosk module (Visitor Pass or Material Entry)', true);
+        updatePortalModuleHint();
+        return;
+      }
       try {
-        await api('/api/settings', { method: 'POST', body: JSON.stringify({ company: document.getElementById('setCompany').value.trim(), portal_title: document.getElementById('setPortalTitle').value.trim(), default_returnable_days: parseInt(document.getElementById('setRetDays').value || '7', 10) }) });
+        await api('/api/settings', {
+          method: 'POST',
+          body: JSON.stringify({
+            company: document.getElementById('setCompany').value.trim(),
+            portal_title: document.getElementById('setPortalTitle').value.trim(),
+            default_returnable_days: parseInt(document.getElementById('setRetDays').value || '7', 10),
+            portal_visitor_enabled: portalVisitor,
+            portal_material_enabled: portalMaterial,
+          }),
+        });
         showToast('Settings saved!'); await bootSession(); switchView('settings');
       } catch (err) { showToast(err.message || 'Could not save settings', true); }
     }
@@ -1501,7 +1769,7 @@
       try {
         await bootSession();
         const v = new URLSearchParams(location.search).get('view');
-        if (v) switchView(v);
+        if (v && hasPerm(v, 'ro')) switchView(v);
         return;
       } catch (_) {}
       try { await bootSuperAdmin(); } catch (_) {}

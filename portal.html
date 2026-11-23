@@ -58,6 +58,8 @@
     }
 
     .tile-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
+    .tile-grid.single { grid-template-columns: 1fr; }
+    .tile-grid.single .tile-btn { min-height: 100px; }
     .tile-btn {
       display: flex; flex-direction: column; align-items: center; justify-content: center;
       text-align: center; gap: 10px; padding: 18px 12px; min-height: 128px;
@@ -192,8 +194,13 @@
       <p id="orgSelectErr" style="color:var(--danger);font-size:12.5px;margin:10px 0 0"></p>
     </div>
 
-    <div id="kioskWorkspace">
-      <div class="tile-grid" role="tablist" aria-label="Gate Entry Mode">
+    <div id="kioskWorkspace" class="hidden">
+      <div id="kioskDisabledCard" class="card hidden" style="text-align:center;padding:28px 18px;max-width:520px;margin:28px auto">
+        <h2 style="margin:0 0 8px">Gate Kiosk Self-Service Disabled</h2>
+        <p style="color:var(--muted);margin:0 0 14px">No public entry modules are enabled on this Gate Kiosk. Please sign in or contact your Administrator.</p>
+        <a class="signin-btn" id="disabledSigninLink" href="/">Sign in ↗</a>
+      </div>
+      <div class="tile-grid" id="portalTileGrid" role="tablist" aria-label="Gate Entry Mode">
         <button type="button" id="tileVisitor" class="tile-btn active" onclick="switchMode('visitor')">
           <span class="tile-icon visitor">
             <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="2.2"/><path d="M5.5 16.5c.8-2 2.2-3 3.5-3s2.7 1 3.5 3"/><line x1="14.5" y1="9" x2="18.5" y2="9"/><line x1="14.5" y1="13" x2="18.5" y2="13"/></svg>
@@ -320,6 +327,9 @@
     const STATE = {
       orgSlug: '',
       options: { factories: [], departments: [], employees: [], defaultReturnableDays: 7 },
+      portalModules: { visitor: true, material: true },
+      currentMode: 'visitor',
+      lastOptionsSig: '',
       visitors: [],
       gatePasses: [],
       vFilter: 'all',
@@ -353,11 +363,48 @@
       if (vc) vc.textContent = txt; if (mc) mc.textContent = txt;
     }
     function switchMode(mode) {
+      const { visitor: vOn, material: mOn } = STATE.portalModules;
+      if (!vOn && !mOn) {
+        document.getElementById('secVisitor').classList.add('hidden');
+        document.getElementById('secMaterial').classList.add('hidden');
+        return;
+      }
+      if (mode === 'visitor' && !vOn && mOn) mode = 'material';
+      if (mode === 'material' && !mOn && vOn) mode = 'visitor';
+      STATE.currentMode = mode;
       const isV = mode === 'visitor';
       document.getElementById('tileVisitor').classList.toggle('active', isV);
       document.getElementById('tileMaterial').classList.toggle('active', !isV);
-      document.getElementById('secVisitor').classList.toggle('hidden', !isV);
-      document.getElementById('secMaterial').classList.toggle('hidden', isV);
+      document.getElementById('secVisitor').classList.toggle('hidden', !isV || !vOn);
+      document.getElementById('secMaterial').classList.toggle('hidden', isV || !mOn);
+    }
+    function applyPortalModules(opt, isInitial = false) {
+      const vOn = opt.portalVisitorEnabled !== false;
+      const mOn = opt.portalMaterialEnabled !== false;
+      STATE.portalModules = { visitor: vOn, material: mOn };
+
+      const tileGrid = document.getElementById('portalTileGrid');
+      const tileV = document.getElementById('tileVisitor');
+      const tileM = document.getElementById('tileMaterial');
+      const disabledCard = document.getElementById('kioskDisabledCard');
+
+      tileV.classList.toggle('hidden', !vOn);
+      tileM.classList.toggle('hidden', !mOn);
+
+      if (!vOn && !mOn) {
+        tileGrid.classList.add('hidden');
+        disabledCard.classList.remove('hidden');
+        switchMode('visitor');
+        return;
+      }
+
+      disabledCard.classList.add('hidden');
+      tileGrid.classList.remove('hidden');
+      tileGrid.classList.toggle('single', !(vOn && mOn));
+
+      if (vOn && !mOn) switchMode('visitor');
+      else if (!vOn && mOn) switchMode('material');
+      else switchMode(isInitial ? 'visitor' : (STATE.currentMode || 'visitor'));
     }
     function setMatDir(dir) {
       STATE.matDir = dir;
@@ -370,13 +417,19 @@
       const days = parseInt(document.getElementById('mDays').value || '7', 10) || 7;
       document.getElementById('mDuePreview').textContent = 'Due: ' + new Date(Date.now() + days * 86400000).toLocaleDateString([], { day:'2-digit', month:'short', year:'numeric' });
     }
-    function populateSelectors(prefix) {
-      const fSel = document.getElementById(prefix + 'Factory'), dSel = document.getElementById(prefix + 'Dept');
+    function populateSelectors(prefix, preserveSelection = false) {
+      const fSel = document.getElementById(prefix + 'Factory'), dSel = document.getElementById(prefix + 'Dept'), hSel = document.getElementById(prefix + 'Host');
+      const prevF = preserveSelection ? fSel.value : null;
+      const prevD = preserveSelection ? dSel.value : null;
+      const prevH = preserveSelection ? hSel.value : null;
       const facs = STATE.options.factories || [];
       const depts = (STATE.options.departments && STATE.options.departments.length) ? STATE.options.departments : ['General'];
       fSel.innerHTML = facs.map(f => `<option value="${esc(f.code)}">${esc(f.name || f.code)}</option>`).join('') + '<option value="">General Gate</option>';
       dSel.innerHTML = depts.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join('');
+      if (preserveSelection && prevF !== null && Array.from(fSel.options).some(o => o.value === prevF)) fSel.value = prevF;
+      if (preserveSelection && prevD !== null && Array.from(dSel.options).some(o => o.value === prevD)) dSel.value = prevD;
       refreshHostsOnly(prefix);
+      if (preserveSelection && prevH !== null && Array.from(hSel.options).some(o => o.value === prevH)) hSel.value = prevH;
     }
     function refreshHostsOnly(prefix) {
       const fac = (document.getElementById(prefix + 'Factory').value || '').toLowerCase();
@@ -521,30 +574,72 @@
       } catch (err) { showToast(err.message, true); }
     }
     function renderQueues() {
-      const vList = STATE.visitors.filter(v => STATE.vFilter === 'all' || v.status === STATE.vFilter);
-      document.getElementById('vQueueList').innerHTML = vList.length ? vList.map(v => `
-        <div class="q-item"><div class="q-top"><div>
-          <div class="q-name">${esc(v.visitorName)} <span style="font-weight:600;color:var(--muted);font-size:12px">(${esc(v.id)})</span></div>
-          <div class="q-meta">${esc(v.company || 'Visitor')} · 📞 ${esc(v.phone || '-')}<br>Meet: <b>${esc(v.hostName || v.department || 'Plant')}</b> (${esc(v.department || 'General')}) · ${esc(v.factory || 'Gate')}<br>Entry: ${new Date(v.entryTime).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}${v.approvedBy ? ` · Approved by <b>${esc(v.approvedBy)}</b>` : ''}</div>
-        </div><div style="text-align:right">${statusBadge(v.status)}${(v.status === 'Approved' || v.status === 'Checked In') ? `<div style="margin-top:8px"><button type="button" class="mini-btn" onclick="kioskVisitorAction('${esc(v.id)}','checkout')">🚪 Check Out</button></div>` : ''}</div></div></div>
-      `).join('') : '<div class="q-meta">No visitor passes in this view yet.</div>';
+      if (STATE.portalModules.visitor) {
+        const vList = STATE.visitors.filter(v => STATE.vFilter === 'all' || v.status === STATE.vFilter);
+        document.getElementById('vQueueList').innerHTML = vList.length ? vList.map(v => `
+          <div class="q-item"><div class="q-top"><div>
+            <div class="q-name">${esc(v.visitorName)} <span style="font-weight:600;color:var(--muted);font-size:12px">(${esc(v.id)})</span></div>
+            <div class="q-meta">${esc(v.company || 'Visitor')} · 📞 ${esc(v.phone || '-')}<br>Meet: <b>${esc(v.hostName || v.department || 'Plant')}</b> (${esc(v.department || 'General')}) · ${esc(v.factory || 'Gate')}<br>Entry: ${new Date(v.entryTime).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}${v.approvedBy ? ` · Approved by <b>${esc(v.approvedBy)}</b>` : ''}</div>
+          </div><div style="text-align:right">${statusBadge(v.status)}${(v.status === 'Approved' || v.status === 'Checked In') ? `<div style="margin-top:8px"><button type="button" class="mini-btn" onclick="kioskVisitorAction('${esc(v.id)}','checkout')">🚪 Check Out</button></div>` : ''}</div></div></div>
+        `).join('') : '<div class="q-meta">No visitor passes in this view yet.</div>';
+      }
 
-      const mList = STATE.gatePasses.filter(g => STATE.mFilter === 'IN' ? g.direction === 'IN' : STATE.mFilter === 'OUT' ? g.direction === 'OUT' : STATE.mFilter === 'RETURNABLE' ? (g.isReturnable && !g.returnedAt) : true);
-      document.getElementById('mQueueList').innerHTML = mList.length ? mList.map(g => `
-        <div class="q-item"><div class="q-top"><div>
-          <div class="q-name"><span class="badge ${g.direction === 'IN' ? 'b-approved' : 'b-pending'}" style="margin-right:4px">${esc(g.direction)}</span>${esc(g.materialName)} <span style="font-size:12px;color:var(--muted)">(${esc(g.id)})</span></div>
-          <div class="q-meta">Qty: <b>${esc(g.quantity)} ${esc(g.unit)}</b> · Party: ${esc(g.partyName || '-')} · Challan: ${esc(g.challanNo || '-')}<br>For: ${esc(g.forName || g.department || 'Plant')} · ${esc(g.factory || 'Gate')}${g.isReturnable && !g.returnedAt && g.expectedReturnAt ? ` · Due: <b>${new Date(g.expectedReturnAt).toLocaleDateString()}</b>` : ''}</div>
-        </div><div style="text-align:right">${statusBadge(g.status)}${g.isReturnable && !g.returnedAt ? `<div style="margin-top:8px"><button type="button" class="mini-btn" onclick="kioskReturnMaterial('${esc(g.id)}')">✓ Mark Returned</button></div>` : ''}</div></div></div>
-      `).join('') : '<div class="q-meta">No material entries in this view yet.</div>';
+      if (STATE.portalModules.material) {
+        const mList = STATE.gatePasses.filter(g => STATE.mFilter === 'IN' ? g.direction === 'IN' : STATE.mFilter === 'OUT' ? g.direction === 'OUT' : STATE.mFilter === 'RETURNABLE' ? (g.isReturnable && !g.returnedAt) : true);
+        document.getElementById('mQueueList').innerHTML = mList.length ? mList.map(g => `
+          <div class="q-item"><div class="q-top"><div>
+            <div class="q-name"><span class="badge ${g.direction === 'IN' ? 'b-approved' : 'b-pending'}" style="margin-right:4px">${esc(g.direction)}</span>${esc(g.materialName)} <span style="font-size:12px;color:var(--muted)">(${esc(g.id)})</span></div>
+            <div class="q-meta">Qty: <b>${esc(g.quantity)} ${esc(g.unit)}</b> · Party: ${esc(g.partyName || '-')} · Challan: ${esc(g.challanNo || '-')}<br>For: ${esc(g.forName || g.department || 'Plant')} · ${esc(g.factory || 'Gate')}${g.isReturnable && !g.returnedAt && g.expectedReturnAt ? ` · Due: <b>${new Date(g.expectedReturnAt).toLocaleDateString()}</b>` : ''}</div>
+          </div><div style="text-align:right">${statusBadge(g.status)}${g.isReturnable && !g.returnedAt ? `<div style="margin-top:8px"><button type="button" class="mini-btn" onclick="kioskReturnMaterial('${esc(g.id)}')">✓ Mark Returned</button></div>` : ''}</div></div></div>
+        `).join('') : '<div class="q-meta">No material entries in this view yet.</div>';
+      }
     }
 
-    async function loadQueues() {
+    function applyPortalOptionsPayload(opt, isInitial = false) {
+      STATE.options = opt;
+      STATE.orgSlug = opt.orgSlug || STATE.orgSlug;
+      if (STATE.orgSlug) localStorage.setItem('gp_portal_org', STATE.orgSlug);
+
+      if (opt.logoUrl) document.getElementById('portalLogo').src = opt.logoUrl;
+      if (opt.portalTitle) document.getElementById('portalHeading').textContent = opt.portalTitle;
+      if (opt.company) document.getElementById('portalEyebrow').textContent = opt.company.toUpperCase() + ' · GATE KIOSK';
+      const signinHref = STATE.orgSlug ? ('/c/' + encodeURIComponent(STATE.orgSlug)) : '/';
+      document.getElementById('signinLink').href = signinHref;
+      const disLink = document.getElementById('disabledSigninLink');
+      if (disLink) disLink.href = signinHref;
+
+      applyPortalModules(opt, isInitial);
+
+      const sig = JSON.stringify({
+        f: opt.factories || [],
+        d: opt.departments || [],
+        e: opt.employees || [],
+        r: opt.defaultReturnableDays || 7,
+      });
+      if (isInitial || sig !== STATE.lastOptionsSig) {
+        STATE.lastOptionsSig = sig;
+        if (isInitial || document.activeElement?.id !== 'mDays') {
+          document.getElementById('mDays').value = opt.defaultReturnableDays || 7;
+        }
+        populateSelectors('v', !isInitial);
+        populateSelectors('m', !isInitial);
+      }
+    }
+
+    async function loadQueues(skipOptionsSync = false) {
       if (!document.getElementById('kioskWorkspace').classList.contains('hidden')) {
         try {
-          const [vr, mr] = await Promise.all([
-            fetch('/api/public/visitors' + orgQuery()).then(r => r.json()),
-            fetch('/api/public/gate-passes' + orgQuery()).then(r => r.json()),
-          ]);
+          if (!skipOptionsSync) {
+            const optRes = await fetch('/api/public/portal-options' + orgQuery());
+            if (optRes.ok) {
+              const opt = await optRes.json();
+              applyPortalOptionsPayload(opt, false);
+            }
+          }
+          const jobs = [];
+          jobs.push(STATE.portalModules.visitor ? fetch('/api/public/visitors' + orgQuery()).then(r => r.ok ? r.json() : { visitors: [] }) : Promise.resolve({ visitors: [] }));
+          jobs.push(STATE.portalModules.material ? fetch('/api/public/gate-passes' + orgQuery()).then(r => r.ok ? r.json() : { gatePasses: [] }) : Promise.resolve({ gatePasses: [] }));
+          const [vr, mr] = await Promise.all(jobs);
           STATE.visitors = vr.visitors || [];
           STATE.gatePasses = mr.gatePasses || [];
           renderQueues();
@@ -562,6 +657,7 @@
     function promptSwitchOrg() {
       localStorage.removeItem('gp_portal_org');
       STATE.orgSlug = '';
+      STATE.lastOptionsSig = '';
       document.getElementById('kioskWorkspace').classList.add('hidden');
       document.getElementById('orgSelectCard').classList.remove('hidden');
     }
@@ -577,20 +673,11 @@
           if (res.status >= 500) showToast(opt.error || 'Gate server error loading options', true);
           return;
         }
-        STATE.options = opt;
-        STATE.orgSlug = opt.orgSlug || STATE.orgSlug;
-        if (STATE.orgSlug) localStorage.setItem('gp_portal_org', STATE.orgSlug);
+        applyPortalOptionsPayload(opt, true);
         document.getElementById('orgSelectCard').classList.add('hidden');
         document.getElementById('kioskWorkspace').classList.remove('hidden');
         document.getElementById('switchOrgBtn').classList.remove('hidden');
-
-        if (opt.logoUrl) document.getElementById('portalLogo').src = opt.logoUrl;
-        if (opt.portalTitle) document.getElementById('portalHeading').textContent = opt.portalTitle;
-        if (opt.company) document.getElementById('portalEyebrow').textContent = opt.company.toUpperCase() + ' · GATE KIOSK';
-        document.getElementById('signinLink').href = STATE.orgSlug ? ('/c/' + encodeURIComponent(STATE.orgSlug)) : '/';
-        document.getElementById('mDays').value = opt.defaultReturnableDays || 7;
-        populateSelectors('v'); populateSelectors('m');
-        await loadQueues();
+        await loadQueues(true);
       } catch (err) {
         if (explicitTry) document.getElementById('orgSelectErr').textContent = err.message;
         else showToast('Could not connect to Gate server: ' + (err.message || 'Network error'), true);
